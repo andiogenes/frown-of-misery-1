@@ -1,0 +1,111 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: GPL-3.0-only. Filled in by tools/make_site.py (its placeholders are NAME in double braces). -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Frown of Misery</title>
+<meta name="description" content="Mutable Instruments' Braids as a firmware for the M-VAVE FM-1, playable in the browser.">
+<style>
+  :root {
+    --bg: #0e0e10; --panel: #17171b; --line: #2a2a31; --text: #e8e6e3; --dim: #9a979f;
+    --acc: #ff3434; --acc-ink: #fff; --code: #202027;
+  }
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) {
+      --bg: #f6f4f1; --panel: #fff; --line: #e1ddd7; --text: #1c1b1f; --dim: #69656e;
+      --acc: #d41c1c; --acc-ink: #fff; --code: #efece7;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 16px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  main { max-width: 880px; margin: 0 auto; padding: 32px 16px 64px; }
+  header h1 { font-size: clamp(2.2rem, 7vw, 3.4rem); line-height: 1; margin: 0 0 8px; color: var(--acc); letter-spacing: .02em; }
+  header p { margin: 0; color: var(--dim); max-width: 60ch; }
+  .build { font: 13px ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--dim); margin-top: 12px; }
+  .build a { color: inherit; }
+  .warn { border-left: 3px solid var(--acc); background: var(--panel); padding: 10px 14px; margin: 24px 0; border-radius: 0 6px 6px 0; }
+  h2 { font-size: 1.15rem; margin: 40px 0 12px; }
+  .btns { display: flex; flex-wrap: wrap; gap: 10px; margin: 20px 0 0; }
+  .btn {
+    display: inline-block; padding: 10px 16px; border-radius: 6px; text-decoration: none; font-weight: 600;
+    border: 1px solid var(--line); color: var(--text); background: var(--panel);
+  }
+  .btn.primary { background: var(--acc); border-color: var(--acc); color: var(--acc-ink); }
+  .emu { width: 100%; aspect-ratio: 4 / 5; max-height: 820px; border: 1px solid var(--line); border-radius: 8px; background: #000; display: block; }
+  .shots { display: flex; gap: 12px; overflow-x: auto; padding-bottom: 6px; }
+  .shots img { width: 240px; height: 240px; border-radius: 6px; border: 1px solid var(--line); image-rendering: pixelated; flex: none; }
+  audio { width: 100%; margin-top: 12px; }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--dim); font-weight: 600; white-space: nowrap; }
+  code { font: 14px ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--code); padding: 1px 5px; border-radius: 4px; }
+  pre { background: var(--code); padding: 12px 14px; border-radius: 6px; overflow-x: auto; }
+  pre code { background: none; padding: 0; }
+  a { color: var(--acc); }
+  footer { margin-top: 56px; color: var(--dim); font-size: 14px; }
+  @media (max-width: 560px) { th { white-space: normal; } .emu { aspect-ratio: 3 / 5; } }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>FROWN OF MISERY</h1>
+    <p>Mutable Instruments' Braids, and later Rings and Clouds, as a firmware for the M-VAVE FM-1 (and the SMK-37).</p>
+    <div class="build">build <a href="{{REPO}}/commit/{{SHA}}">{{SHORT}}</a> · {{DATE}} · package {{SIZE}}</div>
+    <div class="btns">
+      <a class="btn primary" href="emu/?fw=frown">Play in the browser</a>
+      <a class="btn" href="frown.fwsc" download>Download for FM-1</a>
+      <a class="btn" href="frown-smk37.fwsc" download>Download for SMK-37</a>
+      <a class="btn" href="{{REPO}}">Source</a>
+    </div>
+  </header>
+
+  <div class="warn">An early development build from the newest commit, not a release. It has not been played on a
+    real FM-1 yet. The emulator runs the same package you would install.</div>
+
+  <h2>Play it here</h2>
+  <iframe class="emu" src="emu/?fw=frown&amp;embed=1" title="The FM-1 emulator running Frown of Misery"
+          allow="autoplay; midi" loading="lazy"></iframe>
+  <p style="color: var(--dim); font-size: 14px">Press Start, then play with the computer keyboard, the mouse, a touch
+    screen or a MIDI keyboard. <a href="emu/?fw=frown">Full page</a> ·
+    <a href="emu/smk37/?fw=frown">SMK-37</a></p>
+
+  <h2>Controls</h2>
+  <table>
+    <tr><th>Keys</th><td>Play, 4 voices sharing one shape, each with its own pitch. Notes also go out over USB-MIDI.</td></tr>
+    <tr><th>ALGORITHM</th><td>The shape: 48 of them, from CSAW to QUESTION MARK</td></tr>
+    <tr><th>KNOB 1 / 2</th><td>TIMBRE / COLOR. What they do depends on the shape, and the screen says.</td></tr>
+    <tr><th>KNOB 3 / 4</th><td>Attack / release, 0 ms to 24 s</td></tr>
+    <tr><th>OCT- / OCT+</th><td>Octave</td></tr>
+    <tr><th>PRESETS</th><td>MIDI channel: OMNI, or 1 to 16</td></tr>
+    <tr><th>MIDI in</th><td>Notes with velocity, pitch bend ±2 semitones, clock display (USB and TRS)</td></tr>
+  </table>
+
+  <h2>Hear it</h2>
+  <p>Rendered by the host build from <code>tests/scripts/braids.txt</code>: a chord on CSAW with TIMBRE swept up, then FM,
+    then PLUCKED.</p>
+  <audio controls preload="none" src="media/braids-demo.wav"></audio>
+  <div class="shots">
+{{SHOTS}}
+  </div>
+
+  <h2>Install</h2>
+  <pre><code>python3 tools/fm1_install.py frown.fwsc</code></pre>
+  <p>Or use the <a href="https://thefirmwarehub.com">FM-1 Firmware Hub</a>, which also takes you back to any other
+    firmware. If a build does not start, hold <b>OCT-</b> while switching on to reach the USB rescue. Installing
+    firmware is at your own risk.</p>
+
+  <footer>
+    GPL-3.0-only · built on <a href="https://github.com/zvenson/dinghy">Dinghy</a> (zvenson), Felucca (Hügelton
+    Instruments) and SLOOP (isod89) · Braids by Emilie Gillet (MIT), the port from
+    <a href="https://github.com/d0pe1/md-one">MD-One</a> · emulator:
+    <a href="{{EMU_REPO}}">fm1-emu</a> by Joakim Eriksson (MIT), built from {{EMU_REV}} ·
+    <a href="NOTICE.txt">notices</a>. Not made or endorsed by Mutable Instruments or M-VAVE.
+  </footer>
+</main>
+</body>
+</html>

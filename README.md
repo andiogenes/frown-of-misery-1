@@ -42,6 +42,23 @@ python3 tools/fm1_install.py build/frown.fwsc
 To get back to any other firmware, use the [FM-1 Firmware Hub](https://thefirmwarehub.com). If a build does not
 start, hold **OCT-** while switching on to reach the USB rescue. Installing firmware is at your own risk.
 
+## In the browser
+
+**[andiogenes.github.io/frown-of-misery-1](https://andiogenes.github.io/frown-of-misery-1/)** runs the newest build
+from `main` in [fm1-emu](https://github.com/joakimeriksson/fm1-emu) (Joakim Eriksson, MIT). fm1-emu emulates the
+FM-1's chip, so the page runs the same `frown.fwsc` you would install. `/emu/smk37/` has the SMK-37 build.
+
+`.github/workflows/pages.yml` builds it on every push to `main`. The steps are the same on a computer:
+
+```sh
+BOARD=smk37 ./build.sh && ./build.sh && tests/run_host.sh tests/scripts/braids.txt
+git clone https://github.com/joakimeriksson/fm1-emu && fm1-emu/web/build.sh "$PWD/emu-dist"   # Rust + wasm32
+python3 tools/make_site.py emu-dist _site && node tests/emu_smoke.mjs _site/emu _site/frown.fwsc
+(cd _site && python3 -m http.server 8000)                                                   # http://localhost:8000
+```
+
+The workflow pins fm1-emu to one commit (`FM1_EMU_REV`). Change it deliberately to update the emulator.
+
 ## Layout
 
 ```
@@ -49,6 +66,7 @@ firmware/src/frown.c     the app: voices, panel, screen, settings
 dsp/engine/fom_engine.*  the sound engine behind a small C API (C++, MIT)
 dsp/mi/                  Mutable Instruments' Braids + stmlib (MIT), the 44.1 kHz adapter, the freestanding shim
 firmware/, tools/, tests/ Dinghy's platform, build and host mode
+site/, tools/make_site.py the GitHub Pages site; tests/emu_smoke.mjs checks the emulator boots the build
 ```
 
 ## Roadmap

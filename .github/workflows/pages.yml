@@ -1,0 +1,142 @@
+# Build the firmware, build fm1-emu's web emulator at a pinned commit, check that the emulator boots this build
+# and plays a note, and publish both on GitHub Pages (Settings -> Pages -> Source: GitHub Actions).
+#   /          the landing page (site/index.html, tools/make_site.py)
+#   /emu/      fm1-emu running this build's frown.fwsc (?fw=frown); /emu/smk37/ the SMK-37 build
+# Pull requests build and test everything but do not deploy.
+name: pages
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # fm1-emu (MIT) at a known-good commit: bump on purpose, never follow master blindly
+  FM1_EMU_REV: 97095f597ebeed8f4f3e608eb7043755dc72f41e
+  SDK_TAG: AC79NN_SDK_V1.2.1_2023-12-13
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Python packages
+        run: python3 -m pip install Pillow
+
+      # ---- the firmware
+
+      - name: JieLi toolchain cache
+        id: tc
+        uses: actions/cache@v4
+        with:
+          path: ~/.jieli
+          key: jieli-toolchain-${{ hashFiles('tools/get_toolchain.sh') }}
+
+      - name: JieLi toolchain (pkgman.jieliapp.com)
+        if: steps.tc.outputs.cache-hit != 'true'
+        run: sh tools/get_toolchain.sh
+
+      - name: Re-link the cached toolchain
+        if: steps.tc.outputs.cache-hit == 'true'
+        run: ln -sfn "$(basename "$(ls -d ~/.jieli/jieli-linux-toolchains-* | sort | tail -1)")" ~/.jieli/toolchain
+
+      # Only three SDK files go into the package (tools/build.py checks their SHA-256), so a sparse, blobless
+      # clone of just those; gitee.com drops connections now and then, hence the retries and the cache.
+      - name: AC79 SDK cache
+        id: sdk
+        uses: actions/cache@v4
+        with:
+          path: ~/fw-AC79_AIoT_SDK/cpu/wl82/tools
+          key: ac79-sdk-${{ env.SDK_TAG }}-3files
+
+      - name: AC79 SDK, three files (gitee.com)
+        if: steps.sdk.outputs.cache-hit != 'true'
+        run: |
+          for i in 1 2 3 4; do
+            rm -rf ~/fw-AC79_AIoT_SDK
+            git clone -q --depth 1 --filter=blob:none --sparse --branch "$SDK_TAG" \
+                https://gitee.com/Jieli-Tech/fw-AC79_AIoT_SDK.git ~/fw-AC79_AIoT_SDK &&
+              git -C ~/fw-AC79_AIoT_SDK sparse-checkout set --no-cone /cpu/wl82/tools/uboot.boot \
+                /cpu/wl82/tools/cfg_tool.bin /cpu/wl82/tools/cfg/eq_cfg_hw.bin && break
+            sleep $((i * 15))
+          done
+          test -f ~/fw-AC79_AIoT_SDK/cpu/wl82/tools/uboot.boot
+
+      - name: Build (the SMK-37 first, the FM-1 last, as the tests expect)
+        run: |
+          BOARD=smk37 sh build.sh
+          sh build.sh
+
+      - name: Host tests
+        run: sh tests/run_tests.sh
+
+      - name: Host-mode demo (sound and screens for the landing page)
+        run: sh tests/run_host.sh tests/scripts/braids.txt
+
+      # ---- the emulator
+
+      - name: fm1-emu ${{ env.FM1_EMU_REV }}
+        run: |
+          git init -q fm1-emu
+          git -C fm1-emu remote add origin https://github.com/joakimeriksson/fm1-emu
+          git -C fm1-emu fetch -q --depth 1 origin "$FM1_EMU_REV"
+          git -C fm1-emu checkout -q FETCH_HEAD
+
+      - name: Rust wasm target
+        run: rustup target add wasm32-unknown-unknown
+
+      - name: Cargo cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            fm1-emu/target
+          key: fm1-emu-${{ env.FM1_EMU_REV }}
+
+      - name: Build the emulator's page (wasm + JS)
+        run: bash fm1-emu/web/build.sh "$PWD/emu-dist"
+
+      # ---- the site
+
+      - name: Assemble the site
+        run: python3 tools/make_site.py emu-dist _site --sha "$GITHUB_SHA" --emu-rev "$FM1_EMU_REV"
+
+      # The emulator, as served, boots this build: audio keeps coming, the screen draws, a MIDI note sounds.
+      - name: Emulator smoke test
+        run: node tests/emu_smoke.mjs _site/emu _site/frown.fwsc
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
