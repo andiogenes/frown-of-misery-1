@@ -17,13 +17,19 @@ const int32_t INT32_MIN_ = (int32_t)0x80000000u;
 /* n / d for a quotient that fits 32 bits: shift and subtract, constant shifts only (no __udivdi3, no __lshrdi3) */
 uint32_t udiv64(uint64_t n, uint32_t d)
 {
-    uint64_t r = 0;
-    uint32_t q = 0;
+    /* the quotient fits 32 bits, so the high word of n is already below d: 32 steps, not 64 (each costs a
+     * handful of instructions on a 32-bit chip) */
+    uint64_t r;
+    uint32_t q = 0, lo;
     int i;
     if (!d) return 0xFFFFFFFFu;
-    for (i = 63; i >= 0; --i) {
-        r = (r << 1) | ((n >> 63) & 1u);
-        n <<= 1;
+    if ((n >> 32) >= d) return 0xFFFFFFFFu;                            /* (would not fit: saturate) */
+    if (!(n >> 32)) return (uint32_t)n / d;                            /* a 32-bit division does it */
+    r = n >> 32;
+    lo = (uint32_t)n;
+    for (i = 31; i >= 0; --i) {
+        r = (r << 1) | (lo >> 31);
+        lo <<= 1;
         q <<= 1;
         if (r >= d) { r -= d; q |= 1u; }
     }
@@ -520,6 +526,9 @@ uint32_t squash_q31(uint32_t x, bool* top)
  * blocker's time constant is ~4400 samples), and a truncating shift biases every sample by up to one LSB, which
  * they pile up: the DC blocker's tail came out half as long. */
 inline int64_t mulr(int64_t a, int64_t b, int shift) { return (a * b + ((int64_t)1 << (shift - 1))) >> shift; }
+/* the same with 32-bit operands: one hardware multiply instead of a 64 x 64 product's three. Identical results
+ * wherever both operands fit 32 bits, which the strings' samples (Q24) and coefficients (Q16..Q30) do. */
+inline int64_t mrw(int32_t a, int32_t b, int shift) { return ((int64_t)a * b + ((int64_t)1 << (shift - 1))) >> shift; }
 /* d / 24 (Rings' block), rounded, as a multiply: no 64-bit division on the chip. |d| < 2^35. */
 inline int64_t div24(int64_t d) { return (d * 178956971 + ((int64_t)1 << 31)) >> 32; }
 
@@ -534,8 +543,14 @@ const int32_t kDcStringLeak = 486958;  /* 20 / 44100, Q30: the dispersion path's
 static uint64_t float_grid(uint64_t x)
 {
     if (x < ((uint64_t)1 << 24)) return x;
-    int m = 63;
-    while (!(x >> m)) --m;
+    int m = 0;                                                         /* the top bit, by halves */
+    uint64_t y = x;
+    if (y >> 32) { y >>= 32; m += 32; }
+    if (y >> 16) { y >>= 16; m += 16; }
+    if (y >> 8) { y >>= 8; m += 8; }
+    if (y >> 4) { y >>= 4; m += 4; }
+    if (y >> 2) { y >>= 2; m += 2; }
+    if (y >> 1) { m += 1; }
     int drop = m - 23;
     uint64_t q = x >> drop, rem = x & (((uint64_t)1 << drop) - 1), half = (uint64_t)1 << (drop - 1);
     if (rem > half || (rem == half && (q & 1))) ++q;
@@ -569,6 +584,11 @@ void RingsString::Init(bool dispersion)
     out_sample_[0] = out_sample_[1] = aux_sample_[0] = aux_sample_[1] = 0;
     dc_x_ = dc_y_ = 0;
     src_phase_ = 0;
+    cache_f_ = cache_eff_ = cache_rt60_ = 0xFFFFFFFFu;
+    cache_g_ = -1;
+    cache_period_ = 0;
+    cache_x_ = 0;
+    cache_h_ = 0;
 }
 
 void RingsString::set_frequency(uint32_t f, int32_t glide_q30)
@@ -582,12 +602,12 @@ int32_t RingsString::ReadHermite(uint32_t delay) const
 {
     const uint32_t m = kStringDelay - 1;
     uint32_t t = write_ + (delay >> 16) + kStringDelay;
-    int64_t xm1 = line_[(t - 1) & m], x0 = line_[t & m], x1 = line_[(t + 1) & m], x2 = line_[(t + 2) & m];
-    int64_t f = delay & 0xFFFFu;                                       /* Q16 */
-    int64_t c = (x1 - xm1) / 2, v = x0 - x1, w = c + v;
-    int64_t a = w + v + (x2 - x0) / 2, b_neg = w + a;
-    int64_t y = mulr(mulr(a, f, 16) - b_neg, f, 16) + c;
-    return (int32_t)(mulr(y, f, 16) + x0);
+    int32_t xm1 = line_[(t - 1) & m], x0 = line_[t & m], x1 = line_[(t + 1) & m], x2 = line_[(t + 2) & m];
+    int32_t f = (int32_t)(delay & 0xFFFFu);                            /* Q16 */
+    int32_t c = (x1 - xm1) / 2, v = x0 - x1, w = c + v;
+    int32_t a = w + v + (x2 - x0) / 2, b_neg = w + a;
+    int32_t y = (int32_t)(mrw((int32_t)(mrw(a, f, 16) - b_neg), f, 16) + c);
+    return (int32_t)(mrw(y, f, 16) + x0);
 }
 
 int32_t RingsString::Read(uint32_t delay) const
@@ -595,7 +615,7 @@ int32_t RingsString::Read(uint32_t delay) const
     const uint32_t m = kStringDelay - 1;
     uint32_t t = write_ + (delay >> 16);
     int64_t a = line_[t & m], b = line_[(t + 1) & m];
-    return (int32_t)(a + mulr(b - a, (int64_t)(delay & 0xFFFFu), 16));
+    return (int32_t)(a + mrw((int32_t)(b - a), (int32_t)(delay & 0xFFFFu), 16));
 }
 
 void RingsString::Process(const int32_t* in, int32_t* out, int32_t* aux, int32_t n)
@@ -609,7 +629,13 @@ void RingsString::ProcessInternal(const int32_t* in, int32_t* out, int32_t* aux,
 {
     const int64_t one16 = 65536, one30 = (int64_t)1 << 30;
     /* the period, clamped to the line; under fs / 2044 the string runs slower and is interpolated (src) */
-    uint32_t period = (uint32_t)udiv64((uint64_t)1 << 48, frequency_ ? frequency_ : 1u);   /* 1 / f, Q16 */
+    /* the block's divisions, each ~32 steps of 64-bit arithmetic on this chip: only when their inputs moved
+     * (the note and the knobs change rarely; a gliding sympathetic string settles in a few hundred blocks) */
+    if (frequency_ != cache_f_) {
+        cache_f_ = frequency_;
+        cache_period_ = (uint32_t)udiv64((uint64_t)1 << 48, frequency_ ? frequency_ : 1u);
+    }
+    uint32_t period = cache_period_;                                   /* 1 / f, Q16 */
     uint32_t delay = period < (4u << 16) ? (4u << 16) : period > (2044u << 16) ? (2044u << 16) : period;
     uint64_t src_ratio = float_grid(((uint64_t)delay * frequency_) >> 16);                 /* Q32, a float product */
     const uint64_t kOne = (uint64_t)1 << 32;
@@ -628,7 +654,12 @@ void RingsString::ProcessInternal(const int32_t* in, int32_t* out, int32_t* aux,
     uint32_t lf = (uint32_t)(((uint64_t)d * (131072u - d)) >> 16);    /* Q16 */
     uint32_t rt60_q4 = (uint32_t)(((uint64_t)49392 * st_ratio_q30((int64_t)lf * 96 << 8)) >> 30);   /* .07 fs 16 */
     uint32_t eff = src_ratio == kOne ? delay : period;                 /* delay / src_ratio */
-    int64_t x = (int64_t)udiv64((uint64_t)eff * 10u << 12, rt60_q4 ? rt60_q4 : 1u);   /* octaves, Q24 */
+    if (eff != cache_eff_ || rt60_q4 != cache_rt60_) {
+        cache_eff_ = eff;
+        cache_rt60_ = rt60_q4;
+        cache_x_ = (int64_t)udiv64((uint64_t)eff * 10u << 12, rt60_q4 ? rt60_q4 : 1u);
+    }
+    int64_t x = cache_x_;                                              /* octaves, Q24 */
     if (x > 177602560) x = 177602560;                                  /* -127 semitones */
     /* SemitonesToRatio(-12 x): the loss per period, truncated to 1/256 semitone as Rings' is */
     int64_t coef = (int64_t)st_ratio_q30(-12 * x);                     /* Q30 */
@@ -652,8 +683,12 @@ void RingsString::ProcessInternal(const int32_t* in, int32_t* out, int32_t* aux,
     iir_g_ = tan_accurate_q19((uint32_t)df);
     iir_rg_ = iir_g_ + (2 << 19);
     {
-        uint32_t inv = udiv64((uint64_t)1 << 49, (uint32_t)(iir_g_ + (1 << 19)));   /* 1 / (1 + g), Q30 */
-        iir_h_ = (int32_t)(((uint64_t)inv * inv) >> 30);
+        if (iir_g_ != cache_g_) {
+            cache_g_ = iir_g_;
+            uint32_t inv = udiv64((uint64_t)1 << 49, (uint32_t)(iir_g_ + (1 << 19)));   /* 1 / (1 + g), Q30 */
+            cache_h_ = (int32_t)(((uint64_t)inv * inv) >> 30);
+        }
+        iir_h_ = cache_h_;
     }
     /* the delay the damping filters add, taken off the loop: 1 - lut_svf_shift(cutoff) */
     int64_t comp = one30 - lut(kRingsSvfShiftQ30, (uint32_t)(cut >> 8) > 65535u ? 65535u : (uint32_t)(cut >> 8));
@@ -672,23 +707,28 @@ void RingsString::ProcessInternal(const int32_t* in, int32_t* out, int32_t* aux,
     int64_t noise_filter = 0, noise_gain = 0;
     if (kDispersion) {
         noise_filter = (int64_t)st_ratio_q30((((int64_t)b - 65536) * 48) << 8);   /* SemitonesToRatio((b - 1) 48) */
-        noise_gain = (int64_t)udiv64((uint64_t)1 << 60, (uint32_t)((214748365 + noise_filter) >> 0));   /* 1/(.2+nf) Q30 */
+        /* 1 / (.2 + nf) reaches 3.8: Q28 (in Q30 it did not fit the division's 32-bit quotient) */
+        noise_gain = (int64_t)udiv64((uint64_t)1 << 58, (uint32_t)(214748365 + noise_filter));
     }
 
     for (int32_t k = 0; k < n; ++k) {
-        src_phase_ = float_grid(src_phase_ + src_ratio);
-        if (src_phase_ > kOne) {
-            src_phase_ -= kOne;                                        /* (exact in float too) */
+        bool advance = true;
+        if (src_ratio != kOne) {                                       /* slowed down (under 21.6 Hz): rare */
+            src_phase_ = float_grid(src_phase_ + src_ratio);
+            advance = src_phase_ > kOne;
+            if (advance) src_phase_ -= kOne;                           /* (exact in float too) */
+        }
+        if (advance) {
             delay_v += delay_inc;
             pos_v += pos_inc;
             comp_v += comp_inc;
             int64_t dl = (delay_v + 128) >> 8;                         /* Q16 */
-            int64_t comb_delay = mulr(dl, pos_v, 24);
-            dl = mulr(dl, comp_v, 30);                                  /* the IIR's delay */
+            int64_t comb_delay = mrw((int32_t)dl, (int32_t)pos_v, 24);
+            dl = mrw((int32_t)dl, (int32_t)comp_v, 30);                 /* the IIR's delay */
             dl -= one16;                                               /* the FIR's */
             int32_t s;
             if (kDispersion) {
-                int64_t noise = ((int64_t)rng_noise() * noise_gain) >> 30;
+                int64_t noise = ((int64_t)rng_noise() * noise_gain) >> 28;
                 dispersion_noise_ += (int32_t)((noise_filter * (noise - dispersion_noise_)) >> 30);
                 disp_v += disp_inc;
                 int64_t disp = (disp_v + 128) >> 8;                    /* Q16 */
@@ -735,8 +775,8 @@ void RingsString::ProcessInternal(const int32_t* in, int32_t* out, int32_t* aux,
             /* DampingFilter: damping (h0 x_ + h1 (x + x__)), h0 = (1 + b) / 2, h1 = (1 - b) / 4 */
             {
                 int64_t h0 = (one30 + fir_brightness_) >> 1, h1 = (one30 - fir_brightness_) >> 2;
-                int64_t y = mulr(h0, fir_x_, 30) + mulr(h1, (int64_t)s + fir_x__, 30);
-                y = mulr(y, fir_damping_, 30);
+                int64_t y = mrw((int32_t)h0, fir_x_, 30) + mrw((int32_t)h1, s + fir_x__, 30);
+                y = mrw((int32_t)y, fir_damping_, 30);
                 fir_x__ = fir_x_;
                 fir_x_ = s;
                 fir_brightness_ += fir_brightness_inc_;
@@ -748,11 +788,11 @@ void RingsString::ProcessInternal(const int32_t* in, int32_t* out, int32_t* aux,
 #endif
             /* the IIR low-pass (stmlib Svf) */
             {
-                int64_t hp = mulr((int64_t)s - mulr(iir_rg_, iir_s1_, 19) - iir_s2_, iir_h_, 30);
-                int64_t ghp = mulr(iir_g_, hp, 19);
+                int64_t hp = mrw((int32_t)((int64_t)s - mrw(iir_rg_, iir_s1_, 19) - iir_s2_), iir_h_, 30);
+                int64_t ghp = mrw(iir_g_, (int32_t)hp, 19);
                 int64_t bp = ghp + iir_s1_;
                 iir_s1_ = (int32_t)(ghp + bp);
-                int64_t gbp = mulr(iir_g_, bp, 19);
+                int64_t gbp = mrw(iir_g_, (int32_t)bp, 19);
                 int64_t lp = gbp + iir_s2_;
                 iir_s2_ = (int32_t)(gbp + lp);
                 s = (int32_t)lp;
@@ -774,9 +814,14 @@ void RingsString::ProcessInternal(const int32_t* in, int32_t* out, int32_t* aux,
             out_sample_[0] = s;
             aux_sample_[0] = Read((uint32_t)(comb_delay < 0 ? 0 : comb_delay));
         }
-        int64_t ph = (int64_t)(src_phase_ >> 16);                      /* Q16 */
-        out[k] += (int32_t)(out_sample_[1] + mulr((int64_t)out_sample_[0] - out_sample_[1], ph, 16));
-        aux[k] += (int32_t)(aux_sample_[1] + mulr((int64_t)aux_sample_[0] - aux_sample_[1], ph, 16));
+        if (src_ratio == kOne) {                                       /* the phase is 1: the new samples */
+            out[k] += out_sample_[0];
+            aux[k] += aux_sample_[0];
+        } else {
+            int64_t ph = (int64_t)(src_phase_ >> 16);                  /* Q16 */
+            out[k] += (int32_t)(out_sample_[1] + mulr((int64_t)out_sample_[0] - out_sample_[1], ph, 16));
+            aux[k] += (int32_t)(aux_sample_[1] + mulr((int64_t)aux_sample_[0] - aux_sample_[1], ph, 16));
+        }
     }
     delay_ = delay_v;
     clamped_position_ = pos_v;
@@ -821,8 +866,8 @@ void RingsPlucker::Process(int32_t* out, int32_t n)
         if (remaining_) { in = rng_noise(); --remaining_; }
         uint32_t t = comb_write_ + (comb_period_ >> 16);
         int64_t a = comb_[t & 255u], b = comb_[(t + 1) & 255u];
-        int64_t rd = a + mulr(b - a, (int64_t)(comb_period_ & 0xFFFFu), 16);
-        int32_t y = (int32_t)(in + mulr(comb_gain_, rd, 30));
+        int64_t rd = a + mrw((int32_t)(b - a), (int32_t)(comb_period_ & 0xFFFFu), 16);
+        int32_t y = (int32_t)(in + mrw(comb_gain_, (int32_t)rd, 30));
         out[k] = y;
         comb_[comb_write_] = y;
         comb_write_ = (comb_write_ - 1u) & 255u;

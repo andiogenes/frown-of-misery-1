@@ -127,6 +127,10 @@ class RingsString {
     int32_t fir_x_, fir_x__, fir_brightness_, fir_brightness_inc_, fir_damping_, fir_damping_inc_;
     /* the IIR damping low-pass (stmlib Svf, Q 0.5): g, r+g Q19, h Q30; states Q24 */
     int32_t iir_g_, iir_rg_, iir_h_, iir_s1_, iir_s2_;
+    /* the per-block divisions' results, kept while their inputs hold */
+    uint32_t cache_f_, cache_period_, cache_eff_, cache_rt60_;
+    int64_t cache_x_;
+    int32_t cache_g_, cache_h_;
     int32_t dc_x_;                 /* the dispersion path's DC blocker: input Q24, state Q40 (no deadband) */
     int64_t dc_y_;
     uint32_t write_;               /* the delay lines' write position */
