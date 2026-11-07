@@ -31,7 +31,9 @@ def rows(vals, per=8, fmt="{}"):
 def main():
     decades = lut("lut_4_decades")
     stiffness = lut("lut_stiffness")
-    assert len(decades) == 257 and len(stiffness) == 257
+    svf_shift = lut("lut_svf_shift")
+    assert len(decades) == 257 and len(stiffness) == 257 and len(svf_shift) == 257
+    svf_shift_q30 = [round(v * (1 << 30)) for v in svf_shift]   # the damping filter's delay, in periods, Q30
     q_q8 = [round(500.0 * v * 256) for v in decades]                     # Resonator's q = 500 * lut_4_decades, Q8
     stiff_q24 = [round(v * (1 << 24)) for v in stiffness]
     exp2_q30 = [round(2.0 ** (i / 256.0) * (1 << 30)) for i in range(257)]   # 2^(i/256), Q30
@@ -68,6 +70,12 @@ static const uint32_t kExp2FracQ30[257] = {{
 /* SoftLimit's gain (27 + x^2) / (27 + 9 x^2) for |x| = i / 64, 0..4, Q16 */
 static const uint32_t kSoftLimitGainQ16[257] = {{
 {rows(soft_q16, 8, "{}u")}
+}};
+
+/* lut_svf_shift: the IIR damping filter's delay as a fraction of the period, over its cutoff in semitones above the
+ * note (index = semitones, 0..128 used of 257), Q30 */
+static const int32_t kRingsSvfShiftQ30[257] = {{
+{rows(svf_shift_q30, 6)}
 }};
 
 /* MIDI note n -> frequency / {RATE} Hz, Q32 */

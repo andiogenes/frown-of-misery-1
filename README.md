@@ -18,11 +18,11 @@ the screen and flash storage. The Braids code and its 44.1 kHz adapter come from
 | --- | --- |
 | keys | play: 4 voices sharing one shape, each with its own pitch, or MONO (legato, last note wins). Notes also go out over USB-MIDI. |
 | SELECT | the engine: BRAIDS or RINGS (MIDI program change 1 / 2 does the same) |
-| ALGORITHM | the shape: 48 of them, from CSAW to QUESTION MARK |
+| ALGORITHM | BRAIDS: the shape, 48 of them, from CSAW to QUESTION MARK. RINGS: the model, MODAL RESONATOR, SYMPATHETIC STRINGS or STRING |
 | EDIT | the next page of parameters; KNOB 1–4 turn the four shown on screen |
 | page OSC | TIMBRE, COLOR (what they do depends on the shape, and the screen says), FINE tune ±50 cents, LEVEL |
 | page AMP | ATTACK, RELEASE (0 ms … 24 s), GLIDE (off … 24 s), VOICES (POLY 4 / MONO) |
-| RINGS page RES | STRUCTURE, BRIGHTNESS, DAMPING, POSITION: Rings' four knobs, its modal resonator |
+| RINGS page RES | STRUCTURE, BRIGHTNESS, DAMPING, POSITION: Rings' four knobs. STRUCTURE tunes the sympathetic strings and sets the string's dispersion. |
 | RINGS page PART | POLY (1, 2 or 4 voices taking the strikes in turn), FINE tune, LEVEL. Rings has no note-off: a key strikes, DAMPING decides how long it rings. |
 | OCT- / OCT+ | octave |
 | PRESETS | MIDI channel: OMNI, or 1–16 |
@@ -89,9 +89,11 @@ it ports almost unchanged. Rings and Clouds were written for chips with floating
 needs a **fixed-point rewrite**, not a port.
 
 1. **Braids on the device**: build, flash, check pitch, CPU load and every shape by ear.
-2. **Rings**, rewritten in fixed point: the modal resonator is done (`dsp/engine/fom_rings.cc`; against the float
-   original at the same rate it matches at 40-60 dB SNR, `make -C dsp/ref port`). Next: sympathetic strings and the
-   string model.
+2. **Rings**, rewritten in fixed point: the modal resonator, the sympathetic strings and the string are done
+   (`dsp/engine/fom_rings.cc`). `make -C dsp/ref port` checks all three against the float original: the modal at
+   40-60 dB SNR at the same rate, the strings at 20-60 dB over a five-note sequence, with colour and envelope
+   within 0.1-0.4 dB of Rings at 44.1 kHz. (Rings' string models depend on the sample rate; the port is Rings at
+   44.1 kHz.) Left: the FM voice and the "string and reverb" model.
 3. **Clouds**, rewritten in fixed point: the granular mode first, using a buffer of about 118 KB in `.pool`
    (336 KB is free), then pitch shifter, looping delay and spectral as the budget allows. It takes the Braids or
    Rings voice as its input.

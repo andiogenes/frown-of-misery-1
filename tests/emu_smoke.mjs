@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Boots our package in the built web emulator (fm1-emu's wasm, as the Pages site serves it) and checks that it
 // runs: audio frames keep coming, the screen draws, the CPU has not halted, and a MIDI note into the jack is
-// louder than silence; for every engine (a program change picks it). It also reads the firmware's own CPU meter
+// louder than silence; for every engine (a program change picks it) and Rings' three models (ALGORITHM). It also reads the firmware's own CPU meter
 // (the bar on the screen's bottom two rows, 2.4 px a percent) with notes sounding, at 240 MHz, the FM-1's clock
 // (MD-One's measurement), and fails above the limit given: the audio interrupt must keep up on the device.
 // The same calls as fm1-emu's own web/smoke.mjs; CI runs it before every deploy.
@@ -54,8 +54,11 @@ if (frames < 2 * 44100) fail.push("too few audio frames (the firmware is not kee
 if (lit < 1000) fail.push("the screen is (nearly) blank");
 
 const CHORD = [48, 55, 60, 64];                         // four notes: every voice busy
-for (const [name, program] of [["Braids", 0], ["Rings", 1]]) {
+// [name, program change (the engine), ALGORITHM clicks (encoder 1: Rings' model, one step further each time)]
+for (const [name, program, clicks] of [["Braids", 0, 0], ["Rings modal", 1, 0], ["Rings sympathetic strings", 1, 1],
+                                       ["Rings string", 1, 1]]) {
   midi(0xC0, program);                                  // program change: the engine
+  if (clicks) { run(0.1); x.fm1_enc(1, clicks); }
   run(0.5);
   const quiet = level(0.5);
   for (const n of CHORD) midi(0x90, n, 100);

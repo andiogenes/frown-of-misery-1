@@ -8,8 +8,9 @@
  *
  * Braids: four paraphonic voices sharing one shape, TIMBRE and COLOR, each with its own pitch, a click-free
  * amplitude glide (attack / release) and a pitch glide.
- * Rings: the modal resonator (dsp/engine/fom_rings.cc), 1, 2 or 4 voices taking the strikes in turn; a note-on
- * strikes (fom_strike), there is no note-off: DAMPING decides how long it rings.
+ * Rings: the modal resonator, the sympathetic strings or the string (dsp/engine/fom_rings.cc), 1, 2 or 4 voices
+ * taking the strikes in turn; a note-on strikes (fom_strike), there is no note-off: DAMPING decides how long it
+ * rings.
  *
  * Threading: fom_render_add() runs in the audio ISR. Everything else is called from the main loop and only
  * stores 32-bit values the ISR reads, written in an order that is safe to see half-done (the pitch before the
@@ -47,6 +48,7 @@ enum {                         /* parameters (all engines; each engine reads the
     FOM_P_DAMPING,
     FOM_P_POSITION,
     FOM_P_POLY,                /* Rings' polyphony: 0, 1, 2 = 1, 2, 4 voices */
+    FOM_P_MODEL,               /* Rings' resonator: 0 modal, 1 sympathetic strings, 2 string */
     FOM_NPARAM
 };
 #define FOM_ENV_MAX 20u

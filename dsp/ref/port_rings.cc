@@ -15,15 +15,17 @@
 #include "wav.h"
 
 namespace {
-fom::RingsModal rings;
+fom::RingsModal modal;
+fom::RingsStrings strings;
+int32_t lines[fom::kNumStrings * fom::kStringDelay], stretch[fom::kMaxPolyphony * fom::kStringDelay / 2];
 }
 
-static uint32_t q16(float v) { return v <= 0.0f ? 0u : v >= 1.0f ? 65535u : (uint32_t)(v * 65536.0f); }
+static uint32_t q16(float v) { return v <= 0.0f ? 0u : v >= 1.0f ? 65535u : (uint32_t)(v * 65536.0f + 0.5f); }
 
 int main(int argc, char** argv)
 {
     if (argc < 2) { std::fprintf(stderr, "usage: %s OUT.wav [poly= structure= brightness= damping= position= notes= every= seconds=]\n", argv[0]); return 2; }
-    int poly = 1, refrate = 48000;
+    int poly = 1, refrate = 48000, model = 0;
     float structure = 0.25f, brightness = 0.5f, damping = 0.5f, position = 0.3f, every = 1.0f, seconds = 4.0f;
     std::vector<int> notes = {60};
     for (int i = 2; i < argc; ++i) {
@@ -31,7 +33,10 @@ int main(int argc, char** argv)
         size_t eq = a.find('=');
         if (eq == std::string::npos) { std::fprintf(stderr, "not key=value: %s\n", argv[i]); return 2; }
         std::string k = a.substr(0, eq), v = a.substr(eq + 1);
-        if (k == "model") { if (std::atoi(v.c_str()) != 0) { std::fprintf(stderr, "only model=0 (modal) is ported\n"); return 2; } }
+        if (k == "model") {
+            model = std::atoi(v.c_str());
+            if (model < 0 || model > 2) { std::fprintf(stderr, "ported: model=0 modal, 1 sympathetic strings, 2 string\n"); return 2; }
+        }
         else if (k == "poly") poly = std::atoi(v.c_str());
         else if (k == "refrate") refrate = std::atoi(v.c_str());
         else if (k == "structure") structure = std::strtof(v.c_str(), nullptr);
@@ -49,8 +54,11 @@ int main(int argc, char** argv)
             }
         } else { std::fprintf(stderr, "unknown key: %s\n", k.c_str()); return 2; }
     }
-    rings.Init();
-    rings.set_polyphony(poly);
+    modal.Init();
+    modal.set_polyphony(poly);
+    strings.Init(lines, stretch);
+    strings.set_model(model);
+    strings.set_polyphony(poly);
     fom::RingsPatch patch = {q16(structure), q16(brightness), q16(damping), q16(position)};
     const int rate = 44100, block = 256;
     const long total = (long)(seconds * rate);
@@ -70,13 +78,15 @@ int main(int argc, char** argv)
         // main loop is coarser, but that is not what this measures)
         long n = block;
         while (next_strike < strikes.size() && strikes[next_strike] <= t) {
-            rings.Strike((uint32_t)notes[next_note++ % notes.size()], 0, 127);
+            uint32_t note = (uint32_t)notes[next_note++ % notes.size()];
+            if (model == 0) modal.Strike(note, 0, 127); else strings.Strike(note, 0, 127);
             ++next_strike;
         }
         if (next_strike < strikes.size() && strikes[next_strike] - t < n) n = strikes[next_strike] - t;
         if (n > total - t) n = total - t;
         std::fill(buf.begin(), buf.end(), 0);
-        rings.Render(patch, 32767, buf.data(), (size_t)n);
+        if (model == 0) modal.Render(patch, 32767, buf.data(), (size_t)n);
+        else strings.Render(patch, 32767, buf.data(), (size_t)n);
         for (long i = 0; i < n * 2; ++i) {
             int32_t v = buf[i];
             out.push_back((int16_t)(v > 32767 ? 32767 : v < -32768 ? -32768 : v));
@@ -85,6 +95,6 @@ int main(int argc, char** argv)
     }
     out.resize(total * 2);
     if (!fomref::write_wav(argv[1], out, 2, rate)) { std::perror(argv[1]); return 1; }
-    std::printf("%s: fixed-point Rings, poly %d, %zu notes, %.2f s at 44.1 kHz\n", argv[1], poly, notes.size(), seconds);
+    std::printf("%s: fixed-point Rings model %d, poly %d, %zu notes, %.2f s at 44.1 kHz\n", argv[1], model, poly, notes.size(), seconds);
     return 0;
 }

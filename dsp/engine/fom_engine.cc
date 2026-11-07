@@ -32,6 +32,7 @@ const fom_param_info_t kParams[FOM_NPARAM] = {
     /* FOM_P_DAMPING    */ {"DAMP", 0, 32767, 16384, FOM_K_BAR},
     /* FOM_P_POSITION   */ {"POSN", 0, 32767, 9830, FOM_K_BAR},
     /* FOM_P_POLY       */ {"POLY", 0, 2, 0, FOM_K_POLY},
+    /* FOM_P_MODEL      */ {"MODEL", 0, 2, 0, FOM_K_INDEX},
 };
 
 /* Glide: a one-pole slew of the pitch, updated every kSub frames. kGlideK[i] = 65536 (1 - e^(-kSub / 2^i)),
@@ -52,6 +53,10 @@ struct Voice {
 
 FOM_POOL fm1::BraidsVoice g_osc[FOM_NV];
 FOM_POOL fom::RingsModal g_rings;
+FOM_POOL fom::RingsStrings g_strings;
+/* the string models' delay lines: 8 strings of 2048 samples, and the dispersion's allpass for 4 (80 KB) */
+FOM_POOL int32_t g_string_lines[fom::kNumStrings * fom::kStringDelay];
+FOM_POOL int32_t g_string_stretch[fom::kMaxPolyphony * fom::kStringDelay / 2];
 
 /* Rings' strikes, from the main loop to the ISR: a ring, one writer each side (w by the main loop, r by the ISR) */
 volatile uint32_t g_strike_w, g_strike_r;
@@ -86,6 +91,7 @@ void fom_init(void)
     g_engine = FOM_E_BRAIDS;
     g_bend = 0;
     g_rings.Init();
+    g_strings.Init(g_string_lines, g_string_stretch);
     g_strike_w = g_strike_r = 0;
     g_shape_now = 0xFFFFFFFFu;
 }
@@ -104,7 +110,8 @@ void fom_strike(uint32_t note, uint32_t velocity)
 int fom_sounding(void)
 {
     uint32_t v;
-    if (g_engine == FOM_E_RINGS) return g_rings.sounding() || g_strike_w != g_strike_r;
+    if (g_engine == FOM_E_RINGS)
+        return (g_p[FOM_P_MODEL] ? g_strings.sounding() : g_rings.sounding()) || g_strike_w != g_strike_r;
     for (v = 0; v < FOM_NV; v++)
         if (g_v[v].gate || g_v[v].amp) return 1;
     return 0;
@@ -118,6 +125,20 @@ static void render_rings(int32_t* out, uint32_t n)
     fom::RingsPatch patch = {q16(g_p[FOM_P_STRUCTURE]), q16(g_p[FOM_P_BRIGHTNESS]), q16(g_p[FOM_P_DAMPING]),
                              q16(g_p[FOM_P_POSITION])};
     int32_t fine = g_p[FOM_P_FINE] + g_bend;
+    if (g_p[FOM_P_MODEL]) {                     /* the string models: their own 24-sample grid, strikes queued */
+        g_strings.set_model(g_p[FOM_P_MODEL]);
+        g_strings.set_polyphony(kPoly[g_p[FOM_P_POLY]]);
+        g_strings.set_fine(fine);
+        for (uint32_t s0 = 0; s0 < n; s0 += 32u) {
+            uint32_t r = g_strike_r;
+            if (r != g_strike_w) {
+                g_strings.Strike(g_strike_note[r & 7u], fine, g_strike_vel[r & 7u]);
+                g_strike_r = r + 1u;
+            }
+            g_strings.Render(patch, g_p[FOM_P_LEVEL], out + 2u * s0, n - s0 < 32u ? n - s0 : 32u);
+        }
+        return;
+    }
     g_rings.set_polyphony(kPoly[g_p[FOM_P_POLY]]);
     g_rings.set_fine(fine);
     /* At most one strike per 32 frames, as Rings takes one strum per 24-sample block: the struck voice is the

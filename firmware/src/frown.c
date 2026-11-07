@@ -5,11 +5,12 @@
  *
  *   keys       play; 4 voices paraphonic (one shape, a pitch each) or MONO (legato, last note wins); out over USB-MIDI
  *   SELECT     the engine: BRAIDS or RINGS (Clouds to come)
- *   ALGORITHM  Braids' shape, 48 of them
+ *   ALGORITHM  Braids' shape, 48 of them; Rings' model: MODAL RESONATOR, SYMPATHETIC STRINGS, STRING
  *   EDIT       the next page of parameters; KNOB 1..4 turn the four on the screen
  *     BRAIDS     OSC  TIMBRE, COLOR (what they do depends on the shape: the screen says), FINE tune, LEVEL
  *                AMP  ATTACK, RELEASE, GLIDE, VOICES (POLY 4 / MONO)
- *     RINGS      RES  STRUCTURE, BRIGHTNESS, DAMPING, POSITION (Rings' four knobs: its modal resonator)
+ *     RINGS      RES  STRUCTURE, BRIGHTNESS, DAMPING, POSITION (Rings' four knobs; STRUCTURE tunes the
+ *                     sympathetic strings and sets the string's dispersion)
  *                PART POLY (1, 2, 4 voices taking the strikes in turn), FINE tune, LEVEL
  *              Rings has no note-off: a key strikes, DAMPING decides how long it rings.
  *   OCT- OCT+  the octave
@@ -239,7 +240,8 @@ static void draw_shape(void)                    /* the line under the engine's n
 {
     char s[32], *p = s;
     if (set.engine == FOM_E_RINGS) {
-        p = put(p, "MODAL RESONATOR");
+        static const char *const MODEL[3] = {"MODAL RESONATOR", "SYMPATHETIC STRINGS", "STRING"};
+        p = put(p, MODEL[set.p[FOM_P_MODEL]]);
     } else {
         p = put_u(p, (uint32_t)set.p[FOM_P_SHAPE] + 1u);
         p = put(p, "/48  ");
@@ -490,8 +492,8 @@ static void app_main(void)
             set_engine((uint32_t)(c < 0 ? 0 : c >= (int32_t)FOM_NENGINES ? (int32_t)FOM_NENGINES - 1 : c));
         }
         if (engine_changed) { engine_changed = 0; dirty = 1; t_change = fm1_ms; }
-        if ((e = fm1_enc_take(ENC_ALGORITHM)) != 0 && set.engine == FOM_E_BRAIDS) {
-            knob_turn(FOM_P_SHAPE, e); dirty = 1; t_change = fm1_ms;
+        if ((e = fm1_enc_take(ENC_ALGORITHM)) != 0) {   /* Braids' shape, Rings' model */
+            knob_turn(set.engine == FOM_E_RINGS ? FOM_P_MODEL : FOM_P_SHAPE, e); dirty = 1; t_change = fm1_ms;
         }
         for (k = 0; k < 4u; k++)
             if ((e = fm1_enc_take(ENC_KNOB1 + k)) != 0 && ui()->knob[set.page][k] != A_NONE) {
@@ -528,7 +530,7 @@ static void app_main(void)
 
         idle_ok = 1;                            /* the drawing below may read MIDI meanwhile (LCD_IDLE) */
         if (set.engine != title_drawn) { title_drawn = set.engine; draw_title(); tabs_drawn = ~0u; }
-        if ((st = (uint32_t)set.p[FOM_P_SHAPE] | set.engine << 8) != shape_drawn) {
+        if ((st = (uint32_t)set.p[FOM_P_SHAPE] | set.engine << 8 | (uint32_t)set.p[FOM_P_MODEL] << 12) != shape_drawn) {
             shape_drawn = st;
             draw_shape();
             for (k = 0; k < 4u; k++) row_drawn[k] = ~0u;   /* TIMBRE's and COLOR's names follow the shape */

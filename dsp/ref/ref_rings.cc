@@ -82,14 +82,14 @@ int main(int argc, char** argv)
     ps.internal_exciter = in_path == nullptr;
     ps.internal_strum = false;
     ps.internal_note = false;
-    ps.tonic = 0.0f;
+    ps.tonic = 12.0f;                  // the module's (cv_scaler: 12 + transpose); the notes are relative to it
     ps.fm = 0.0f;
     ps.chord = 0;
-    ps.note = (float)notes[0];
+    ps.note = (float)notes[0] - 12.0f;
     for (long t = 0; t < total; t += block) {
         ps.strum = false;
         if (period > 0 && t % period < block) {      // the first block of each period: strike the next note
-            ps.note = (float)notes[next_note++ % notes.size()];
+            ps.note = (float)notes[next_note++ % notes.size()] - 12.0f;
             ps.strum = true;
         }
         for (int i = 0; i < block; ++i) {
