@@ -1,0 +1,6 @@
+/* SPDX-License-Identifier: MIT
+ * Freestanding stand-in for <cstdio>. Deliberately EMPTY: there is no stdio on
+ * the device. See dsp/mi/shim/README.md. */
+#ifndef FM1_SHIM_CSTDIO
+#define FM1_SHIM_CSTDIO
+#endif

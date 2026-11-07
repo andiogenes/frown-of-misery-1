@@ -1,0 +1,15 @@
+/* SPDX-License-Identifier: MIT
+ * Freestanding stand-in for <cstdlib>. See dsp/mi/shim/README.md. */
+#ifndef FM1_SHIM_CSTDLIB
+#define FM1_SHIM_CSTDLIB
+
+#include <stddef.h>
+
+/* Defined inline rather than pulled from libc: it is one instruction and the
+ * firmware's libc.c does not carry it. */
+namespace std {
+inline int abs(int v) { return v < 0 ? -v : v; }
+}
+using std::abs;
+
+#endif

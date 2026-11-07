@@ -1,0 +1,21 @@
+/* SPDX-License-Identifier: MIT
+ * Freestanding stand-in for <cstring>. The three functions are provided by the
+ * firmware's own libc.c. See dsp/mi/shim/README.md. */
+#ifndef FM1_SHIM_CSTRING
+#define FM1_SHIM_CSTRING
+
+#include <stddef.h>
+
+extern "C" {
+void *memcpy(void *dst, const void *src, size_t n);
+void *memset(void *dst, int c, size_t n);
+void *memmove(void *dst, const void *src, size_t n);
+}
+
+namespace std {
+using ::memcpy;
+using ::memmove;
+using ::memset;
+}
+
+#endif

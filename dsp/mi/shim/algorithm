@@ -1,0 +1,39 @@
+/* SPDX-License-Identifier: MIT
+ * Freestanding stand-in for <algorithm>: the five templates MI's DSP uses.
+ * See dsp/mi/shim/README.md. */
+#ifndef FM1_SHIM_ALGORITHM
+#define FM1_SHIM_ALGORITHM
+
+#include <stddef.h>
+
+namespace std {
+
+template <class T> inline const T& min(const T& a, const T& b) { return b < a ? b : a; }
+template <class T> inline const T& max(const T& a, const T& b) { return a < b ? b : a; }
+
+template <class T> inline void swap(T& a, T& b) { T t = a; a = b; b = t; }
+
+template <class It, class T> inline void fill(It first, It last, const T& v)
+{
+    for (; first != last; ++first) *first = v;
+}
+
+template <class It, class Size, class T> inline It fill_n(It first, Size n, const T& v)
+{
+    for (Size i = 0; i < n; ++i, ++first) *first = v;
+    return first;
+}
+
+/* braids/quantizer.cc walks a sorted scale table. */
+template <class It, class T> inline It upper_bound(It first, It last, const T& v)
+{
+    while (first != last) {
+        It mid = first + ((last - first) >> 1);
+        if (v < *mid) last = mid; else first = mid + 1;
+    }
+    return first;
+}
+
+}  // namespace std
+
+#endif

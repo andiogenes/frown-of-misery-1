@@ -1,0 +1,25 @@
+# Braids: a chord on CSAW, TIMBRE swept up, then FM, PLUCKED (struck by each note-on) and a longer release.
+# Encoders: 1 ALGORITHM (shape), 2..5 KNOB1..4 (TIMBRE, COLOR, attack, release), 6 PRESETS (MIDI channel)
+200 keys 0x4880
+600 enc 2 8
+900 enc 2 8
+1200 enc 2 8
+1400 shot
+1600 keys 0
+1800 enc 1 25
+2000 keys 0x80
+2300 enc 3 20
+2600 shot
+2800 keys 0
+3000 enc 1 3
+3200 midi 0x90 60 110
+3400 midi 0x90 64 110
+3600 midi 0x90 67 110
+3700 shot
+4000 midi 0x80 60 0
+4000 midi 0x80 64 0
+4000 midi 0x80 67 0
+4200 enc 5 4
+4400 keys 0x4880
+5000 keys 0
+6500 end

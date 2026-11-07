@@ -1,0 +1,10 @@
+/* SPDX-License-Identifier: MIT
+ * Freestanding stand-in for <cmath>. Deliberately EMPTY.
+ *
+ * MI includes it in headers that, on the code paths we compile, use no
+ * floating-point maths at all. Keeping it empty means any real use of a libm
+ * function fails loudly at compile time rather than silently pulling in
+ * soft-float the chip cannot link. See dsp/mi/shim/README.md. */
+#ifndef FM1_SHIM_CMATH
+#define FM1_SHIM_CMATH
+#endif
