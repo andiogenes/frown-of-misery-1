@@ -39,6 +39,12 @@ tests/run_host.sh tests/scripts/braids.txt   # on your computer: build/host/frow
 python3 tools/fm1_install.py build/frown.fwsc
 ```
 
+Or install from the browser: **[the web installer](https://andiogenes.github.io/frown-of-misery-1/install.html)** works in
+Chrome, Edge and other Chromium browsers (they support Web MIDI with SysEx). It uses Felucca's update code, with
+genkigenki's SMK-37 changes, from `web/`. If an install is cut off, it resumes. It refuses the wrong board and other
+firmwares' update modes before anything is written; `tests/web_install_test.mjs` checks all of this against a
+simulated device.
+
 To get back to any other firmware, use the [FM-1 Firmware Hub](https://thefirmwarehub.com). If a build does not
 start, hold **OCT-** while switching on to reach the USB rescue. Installing firmware is at your own risk.
 
@@ -66,7 +72,8 @@ firmware/src/frown.c     the app: voices, panel, screen, settings
 dsp/engine/fom_engine.*  the sound engine behind a small C API (C++, MIT)
 dsp/mi/                  Mutable Instruments' Braids + stmlib (MIT), the 44.1 kHz adapter, the freestanding shim
 firmware/, tools/, tests/ Dinghy's platform, build and host mode
-site/, tools/make_site.py the GitHub Pages site; tests/emu_smoke.mjs checks the emulator boots the build
+site/, tools/make_site.py the GitHub Pages site and the web installer; tests/emu_smoke.mjs, tests/web_install_test.mjs
+web/                     the FM-1 update protocol over Web MIDI (Felucca, genkigenki)
 ```
 
 ## Roadmap

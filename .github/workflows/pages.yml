@@ -1,6 +1,6 @@
 # Build the firmware, build fm1-emu's web emulator at a pinned commit, check that the emulator boots this build
 # and plays a note, and publish both on GitHub Pages (Settings -> Pages -> Source: GitHub Actions).
-#   /          the landing page (site/index.html, tools/make_site.py)
+#   /          the landing page (site/index.html, tools/make_site.py); /install.html the web installer
 #   /emu/      fm1-emu running this build's frown.fwsc (?fw=frown); /emu/smk37/ the SMK-37 build
 # Pull requests build and test everything but do not deploy.
 name: pages
@@ -86,6 +86,11 @@ jobs:
 
       - name: Host tests
         run: sh tests/run_tests.sh
+
+      # site/install.js on web/fm1ota.js against a simulated FM-1 / SMK-37: the whole image reaches the loader,
+      # a cut-off install resumes, the wrong board or a foreign loader is refused
+      - name: Web installer test
+        run: node tests/web_install_test.mjs
 
       - name: Host-mode demo (sound and screens for the landing page)
         run: sh tests/run_host.sh tests/scripts/braids.txt

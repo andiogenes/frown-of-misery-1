@@ -3,6 +3,7 @@
 """Assemble the GitHub Pages site in OUT (default _site):
 
   OUT/index.html            the landing page (site/index.html, filled in)
+  OUT/install.html          the web installer (site/install.*, web/fm1ota.js, web/fm1pkg.js)
   OUT/frown.fwsc ...        the packages of this build, to download and for the emulator
   OUT/media/                the host-mode demo: build/host/frown.wav and the screens
   OUT/emu/                  fm1-emu's web build (EMU_DIST), its catalog replaced: this build of Frown only
@@ -65,6 +66,9 @@ def main():
     shutil.copytree(a.emu, out / "emu")
     for name, p in pkgs.items():
         shutil.copy2(p, out / name)
+    # the web installer (site/install.*) and the update protocol it runs on (web/, from Felucca / genkigenki)
+    for src in (ROOT / "site/install.html", ROOT / "site/install.js", ROOT / "web/fm1ota.js", ROOT / "web/fm1pkg.js"):
+        shutil.copy2(src, out / src.name)
 
     short = a.sha[:7]
     version = "dev"                     # (not a release: the commit says which build)

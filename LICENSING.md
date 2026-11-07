@@ -17,6 +17,9 @@ complete source under the same licence too.
 | The wiring `platform.c`, the host mode `tests/`, the docs in `docs/` (Dinghy's README is `docs/DINGHY.md`) | zvenson |
 | The app `firmware/src/frown.c` (begun from Dinghy's `dinghy.c`), the C++ build in `tools/build.py` and `tests/run_host.sh`, `tests/scripts/braids.txt` | Frown of Misery contributors, GPL-3.0-only |
 
+| The web update protocol `web/fm1ota.js`, `web/fm1pkg.js` (unchanged) | Copyright (C) 2026 Leo Kuroshita (@kurogedelic), Hügelton Instruments ([Felucca](https://github.com/hugelton/Felucca) `web/`), with M. Geisler's (genkigenki) SMK-37 changes, from [genkigenki/sloop-fm1](https://github.com/genkigenki/sloop-fm1) branch `smk37` at `cab2110` |
+| The site: `site/` (landing page, web installer `install.html` / `install.js`), `tools/make_site.py`, `tests/emu_smoke.mjs`, `tests/web_install_test.mjs` | Frown of Misery contributors, GPL-3.0-only |
+
 ## The sound engine: `dsp/` (MIT)
 
 `dsp/` builds without the firmware and carries `SPDX-License-Identifier: MIT`. MIT is GPL-3.0 compatible, so it links

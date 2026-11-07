@@ -58,6 +58,7 @@
     <div class="build">build <a href="{{REPO}}/commit/{{SHA}}">{{SHORT}}</a> · {{DATE}} · package {{SIZE}}</div>
     <div class="btns">
       <a class="btn primary" href="emu/?fw=frown">Play in the browser</a>
+      <a class="btn" href="install.html">Install (Chrome, Edge)</a>
       <a class="btn" href="frown.fwsc" download>Download for FM-1</a>
       <a class="btn" href="frown-smk37.fwsc" download>Download for SMK-37</a>
       <a class="btn" href="{{REPO}}">Source</a>
@@ -94,6 +95,8 @@
   </div>
 
   <h2>Install</h2>
+  <p><a href="install.html">Install from the browser</a>: Chrome, Edge or another Chromium browser, over USB. Or from a
+    terminal, with the source checked out:</p>
   <pre><code>python3 tools/fm1_install.py frown.fwsc</code></pre>
   <p>Or use the <a href="https://thefirmwarehub.com">FM-1 Firmware Hub</a>, which also takes you back to any other
     firmware. If a build does not start, hold <b>OCT-</b> while switching on to reach the USB rescue. Installing

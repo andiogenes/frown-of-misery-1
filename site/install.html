@@ -1,0 +1,172 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: GPL-3.0-only. Frown of Misery's web installer: site/install.js, web/fm1ota.js, web/fm1pkg.js -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Install Frown</title>
+<meta name="description" content="Install Frown of Misery on an M-VAVE FM-1 or SMK-37 from Chrome or Edge, over USB-MIDI.">
+<style>
+  :root {
+    --bg: #0e0e10; --panel: #17171b; --line: #2a2a31; --text: #e8e6e3; --dim: #9a979f;
+    --acc: #ff3434; --acc-ink: #fff; --ok: #3ccf7a; --code: #202027;
+  }
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) {
+      --bg: #f6f4f1; --panel: #fff; --line: #e1ddd7; --text: #1c1b1f; --dim: #69656e;
+      --acc: #d41c1c; --acc-ink: #fff; --ok: #138a4a; --code: #efece7;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 640px; margin: 0 auto; padding: 32px 16px 64px; }
+  h1 { font-size: clamp(1.8rem, 6vw, 2.4rem); line-height: 1.1; margin: 0 0 6px; color: var(--acc); }
+  .sub { color: var(--dim); margin: 0 0 24px; }
+  .sub a { color: inherit; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 18px; margin: 16px 0; }
+  .boards { display: flex; gap: 10px; flex-wrap: wrap; }
+  .boards label { flex: 1 1 140px; border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; cursor: pointer; display: flex; gap: 8px; align-items: flex-start; }
+  .boards label:has(input:checked) { border-color: var(--acc); }
+  .boards small { display: block; color: var(--dim); }
+  button {
+    font: inherit; font-weight: 600; padding: 12px 20px; border-radius: 6px; border: 1px solid var(--acc);
+    background: var(--acc); color: var(--acc-ink); cursor: pointer; width: 100%; margin-top: 16px;
+  }
+  button:disabled { opacity: .5; cursor: default; }
+  progress { width: 100%; height: 10px; margin-top: 14px; accent-color: var(--acc); }
+  #status { margin-top: 12px; min-height: 1.5em; }
+  #status.ok { color: var(--ok); font-weight: 600; }
+  #status.err { color: var(--acc); }
+  details { margin-top: 12px; color: var(--dim); font-size: 14px; }
+  pre { background: var(--code); padding: 10px 12px; border-radius: 6px; overflow-x: auto; font-size: 12px; max-height: 240px; }
+  ul { padding-left: 20px; margin: 8px 0 0; }
+  li { margin: 4px 0; }
+  .warn { border-left: 3px solid var(--acc); }
+  a { color: var(--acc); }
+  footer { margin-top: 40px; color: var(--dim); font-size: 14px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Install Frown of Misery</h1>
+  <p class="sub">Over USB-MIDI, from Chrome, Edge or another Chromium browser. <a href="./">Back to the page</a></p>
+
+  <div class="card" id="nomidi" hidden>
+    <b>This browser cannot install firmware.</b> It needs Web MIDI with SysEx: open this page in Chrome, Edge, Opera,
+    Brave or another Chromium browser on a computer, over https.
+  </div>
+
+  <div class="card">
+    <div class="boards" role="radiogroup" aria-label="Device">
+      <label><input type="radio" name="board" value="fm1" checked>
+        <span><b>FM-1</b><small id="size-fm1">frown.fwsc</small></span></label>
+      <label><input type="radio" name="board" value="smk37">
+        <span><b>SMK-37</b><small id="size-smk37">Pro, Elite, MKE-P37</small></span></label>
+    </div>
+    <button id="go" type="button">Install</button>
+    <progress id="bar" max="1" value="0" hidden></progress>
+    <div id="status" role="status" aria-live="polite"></div>
+    <details><summary>Log</summary><pre id="log"></pre></details>
+  </div>
+
+  <div class="card warn">
+    <b>Before you start</b>
+    <ul>
+      <li>This is an early development build. It has not yet been tested on a real FM-1. Installing firmware is at your own risk.</li>
+      <li>Connect the device with a USB <i>data</i> cable and close every other app or tab that uses MIDI (DAWs, editors, M-UPGRADE).</li>
+      <li>Do not unplug it or close this page while it writes (about a minute). If it is cut off, plug it back in and
+        press Install again: the device stays in update mode and the write resumes.</li>
+      <li>If Frown does not start: hold <b>OCT-</b> while switching on, to reach the USB rescue, then install again.</li>
+      <li>To go back to any other firmware, or to M-VAVE's: the <a href="https://thefirmwarehub.com">FM-1 Firmware Hub</a>.</li>
+    </ul>
+  </div>
+
+  <footer>GPL-3.0-only, no warranty. The update code is Felucca's (Leo Kuroshita, Hügelton Instruments) with
+    genkigenki's SMK-37 work: <a href="https://github.com/andiogenes/frown-of-misery-1">source</a>.</footer>
+</main>
+
+<script type="module">
+import { BOARDS, loadPackage, install } from "./install.js";
+
+const $ = (id) => document.getElementById(id);
+const TEXT = {
+  start: "Connected to %s: starting", verify: "Checking the package", loader: "Switching to update mode",
+  write: "Writing", reboot: "Restarting", done: "Done: the device runs %s",
+  denied: "MIDI (SysEx) access was not allowed. Allow MIDI for this site (the icon in the address bar) and press Install again.",
+  notfound: "No FM-1 or SMK-37 answered. Check the USB data cable, close other apps that use MIDI, and press Install again.%s",
+  model: "The connected device does not match the board chosen above: %s",
+  other: "This keyboard runs a firmware with its own updater (%s). Nothing was written.",
+  fm1pkg: "This is the FM-1 package and the device is an SMK-37: choose SMK-37 above. Nothing was sent.",
+  lost: "The USB connection was lost. Plug it back in and press Install again to resume.",
+  stopped: "The device stopped answering. Replug the USB cable and press Install again to resume.",
+  noloader: "The device in update mode was not found. Replug the USB cable and press Install again (it stays in update mode until finished).",
+  noreturn: "The device did not come back. Switch it off and on.",
+  mismatch: "Written, but the device reports %s. Switch it off and on, and install again if Frown does not start.",
+  foreign: "The device is in the update mode of another firmware (%s). Finish that update with its own updater first.",
+  badpkg: "The package on this site is damaged or not what was expected: %s",
+  loadfail: "Could not download the package: %s",
+};
+const say = (k, detail = "", cls = "") => {
+  $("status").textContent = (TEXT[k] || k).replace("%s", detail);
+  $("status").className = cls;
+};
+const log = (s) => { $("log").textContent += s + "\n"; };
+const board = () => document.querySelector("input[name=board]:checked").value;
+let busy = false;
+
+if (!navigator.requestMIDIAccess || !window.isSecureContext) {
+  $("nomidi").hidden = false;
+  $("go").disabled = true;
+}
+
+for (const id of Object.keys(BOARDS)) {           // the packages' sizes, so the radio says what it will install
+  fetch(BOARDS[id].file, { method: "HEAD" }).then((r) => {
+    const n = Number(r.headers.get("content-length"));
+    if (r.ok && n) $("size-" + id).textContent = `${BOARDS[id].file} · ${Math.round(n / 1024)} KB`;
+  }).catch(() => {});
+}
+
+window.addEventListener("beforeunload", (e) => { if (busy) { e.preventDefault(); e.returnValue = ""; } });
+
+$("go").addEventListener("click", async () => {
+  if (busy) return;
+  busy = true;
+  $("go").disabled = true;
+  document.querySelectorAll("input[name=board]").forEach((r) => { r.disabled = true; });
+  $("log").textContent = "";
+  $("bar").hidden = true;
+  try {
+    const pkg = await loadPackage(board());
+    log(`package ${BOARDS[pkg.board].file}: ${pkg.product}, ${pkg.bytes} B, image ${pkg.image.length} B`);
+    let midi;
+    try { midi = await navigator.requestMIDIAccess({ sysex: true }); }
+    catch (e) { say("denied", "", "err"); return; }
+    const total = Math.ceil(pkg.image.length / 512);
+    const step = (k, d) => {
+      if (k === "write") {
+        $("bar").hidden = false;
+        $("bar").value = Math.min(1, d / total);
+        say("write", "");
+        $("status").textContent = `Writing ${Math.min(100, Math.round((100 * d) / total))} %`;
+        return;
+      }
+      if (k === "verify") return say("verify");
+      log(k + (d ? " " + d : ""));
+      say(k, d || "", k === "done" ? "ok" : "");
+      if (k === "done") $("bar").value = 1;
+    };
+    const r = await install(midi, pkg, step, log);
+    log(`${r.result}: ${r.identity}`);
+  } catch (e) {
+    log(String((e && e.stack) || e));
+    if (e && e.code && TEXT[e.code]) say(e.code, e.detail || e.message, "err");
+    else say("Error: " + (e && e.message), "", "err");
+  } finally {
+    busy = false;
+    $("go").disabled = false;
+    document.querySelectorAll("input[name=board]").forEach((r) => { r.disabled = false; });
+  }
+});
+</script>
+</body>
+</html>
