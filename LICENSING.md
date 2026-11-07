@@ -30,7 +30,8 @@ into the GPL-3.0-only firmware and stays reusable elsewhere. Nothing copied or a
 | --- | --- | --- |
 | `dsp/mi/braids/`, `dsp/mi/stmlib/`: Mutable Instruments' Braids and stmlib, unmodified except `braids/resources.cc`, regenerated for 44.1 kHz | MIT, Copyright (C) Emilie Gillet | [pichenettes/eurorack](https://github.com/pichenettes/eurorack) `f4cfa76`, see `dsp/mi/PROVENANCE.md` |
 | `dsp/mi/fm1_braids.*` (the 44.1 kHz adapter), `dsp/mi/shim/`, `dsp/engine/fm1_shapes.h`, the regenerated resources | MIT | [MD-One](https://github.com/d0pe1/md-one) by d0pe1, `6db1985` |
-| `dsp/engine/fom_engine.*` | MIT | Frown of Misery contributors |
+| `dsp/engine/fom_engine.*`, `dsp/ref/*.cc`, `dsp/ref/wav.h`, `dsp/ref/compare.py` | MIT | Frown of Misery contributors |
+| `dsp/ref/eurorack/`: Rings, Clouds and stmlib, unmodified, built on the host only as the float references | MIT, Copyright (C) Emilie Gillet | [pichenettes/eurorack](https://github.com/pichenettes/eurorack) `f4cfa76`, stmlib `e3bd7c9`, see `dsp/ref/PROVENANCE.md` |
 
 ## Third-party material
 

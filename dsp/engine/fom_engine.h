@@ -2,8 +2,12 @@
  *
  * Frown of Misery's sound engine, as the C firmware sees it.
  *
- * Today: four paraphonic Braids voices sharing one shape, TIMBRE and COLOR, each with its own pitch and a
- * click-free amplitude glide (attack / release). Rings and Clouds will join behind this same C interface.
+ * One engine sounds at a time (fom_set_engine): today Braids, then Rings, and Clouds after either. Every engine is
+ * driven the same way: notes on its voices, and parameters by number (FOM_P_*), each an integer in its own range
+ * (fom_param_info). The firmware's UI is built from that table, so a new engine needs no new UI code.
+ *
+ * Braids: four paraphonic voices sharing one shape, TIMBRE and COLOR, each with its own pitch, a click-free
+ * amplitude glide (attack / release) and a pitch glide.
  *
  * Threading: fom_render_add() runs in the audio ISR. Everything else is called from the main loop and only
  * stores 32-bit values the ISR reads, written in an order that is safe to see half-done (the pitch before the
@@ -21,21 +25,42 @@ extern "C" {
 #define FOM_NV 4u              /* voices */
 #define FOM_BLOCK_MAX 256u     /* the most frames fom_render_add() is ever asked for at once */
 
-void fom_init(void);
+enum {                         /* engines */
+    FOM_E_BRAIDS,
+    FOM_NENGINES
+};
 
-/* The shared sound: shape 0..FM1_NSHAPES-1 (dsp/engine/fm1_shapes.h), timbre and color 0..32767. */
-void fom_set_shape(uint32_t shape);
-void fom_set_timbre(uint32_t timbre);
-void fom_set_color(uint32_t color);
-/* The envelope: attack and release times as an index 0..FOM_ENV_MAX, a full-scale sweep taking 2^index frames
- * (0: at once, 10: 23 ms, 15: 0.74 s, 20: 24 s). fom_env_ms() says how long an index is. */
+enum {                         /* parameters (all engines; each engine reads the ones it uses) */
+    FOM_P_SHAPE,               /* Braids: 0..47, dsp/engine/fm1_shapes.h */
+    FOM_P_TIMBRE,              /* 0..32767 */
+    FOM_P_COLOR,               /* 0..32767 */
+    FOM_P_FINE,                /* fine tune, -64..63 in 1/128 semitone */
+    FOM_P_LEVEL,               /* 0..32767, the engine's output level */
+    FOM_P_ATTACK,              /* envelope times, 0..FOM_ENV_MAX: a full sweep takes 2^index frames */
+    FOM_P_RELEASE,
+    FOM_P_GLIDE,               /* pitch glide, 0 (off)..FOM_ENV_MAX: a time constant of 2^index frames */
+    FOM_NPARAM
+};
 #define FOM_ENV_MAX 20u
-void fom_set_env(uint32_t attack, uint32_t release);
-uint32_t fom_env_ms(uint32_t index);
+
+/* How a parameter is shown and stored. */
+enum { FOM_K_BAR, FOM_K_TIME, FOM_K_CENTS, FOM_K_INDEX };
+typedef struct {
+    const char *name;          /* <= 6 characters */
+    int16_t min, max, def;
+    uint8_t kind;              /* FOM_K_*: a bar, a time (fom_env_ms), cents (value * 100 / 128), a plain index */
+} fom_param_info_t;
+const fom_param_info_t *fom_param_info(uint32_t p);
+
+void fom_init(void);
+void fom_set_engine(uint32_t e);
+void fom_set_param(uint32_t p, int32_t v);  /* clamped to the parameter's range */
+uint32_t fom_env_ms(uint32_t index);        /* how long an envelope or glide index is, in ms */
 /* The pitch wheel, in 1/128 semitone (Braids' pitch unit): +-256 is +-2 semitones. */
 void fom_set_bend(int32_t bend);
 
-/* Voice v plays MIDI note `note` at level `gate` (Q15, 0 releases it); strike: excite it anew (a note-on). */
+/* Voice v plays MIDI note `note` at level `gate` (Q15, 0 releases it). strike: excite it anew (a note-on);
+ * 0 for legato (the pitch glides there, nothing restarts). */
 void fom_voice_play(uint32_t v, uint32_t note, int32_t gate, int strike);
 void fom_voice_release(uint32_t v);
 int  fom_voice_sounding(uint32_t v);       /* its gate is up, or its release still rings */

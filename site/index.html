@@ -77,10 +77,12 @@
 
   <h2>Controls</h2>
   <table>
-    <tr><th>Keys</th><td>Play, 4 voices sharing one shape, each with its own pitch. Notes also go out over USB-MIDI.</td></tr>
+    <tr><th>Keys</th><td>Play: 4 voices sharing one shape, each with its own pitch, or MONO (legato). Notes also go out over USB-MIDI.</td></tr>
     <tr><th>ALGORITHM</th><td>The shape: 48 of them, from CSAW to QUESTION MARK</td></tr>
-    <tr><th>KNOB 1 / 2</th><td>TIMBRE / COLOR. What they do depends on the shape, and the screen says.</td></tr>
-    <tr><th>KNOB 3 / 4</th><td>Attack / release, 0 ms to 24 s</td></tr>
+    <tr><th>EDIT</th><td>The next page of parameters. KNOB 1–4 turn the four on the screen.</td></tr>
+    <tr><th>Page OSC</th><td>TIMBRE, COLOR (what they do depends on the shape, and the screen says), FINE tune, LEVEL</td></tr>
+    <tr><th>Page AMP</th><td>ATTACK, RELEASE (0 ms to 24 s), GLIDE, VOICES (POLY 4 / MONO)</td></tr>
+    <tr><th>SELECT</th><td>The engine: Braids now, Rings and Clouds later</td></tr>
     <tr><th>OCT- / OCT+</th><td>Octave</td></tr>
     <tr><th>PRESETS</th><td>MIDI channel: OMNI, or 1 to 16</td></tr>
     <tr><th>MIDI in</th><td>Notes with velocity, pitch bend ±2 semitones, clock display (USB and TRS)</td></tr>
@@ -88,7 +90,7 @@
 
   <h2>Hear it</h2>
   <p>Rendered by the host build from <code>tests/scripts/braids.txt</code>: a chord on CSAW with TIMBRE swept up, then FM,
-    then PLUCKED.</p>
+    then PLUCKED, then MONO with glide.</p>
   <audio controls preload="none" src="media/braids-demo.wav"></audio>
   <div class="shots">
 {{SHOTS}}

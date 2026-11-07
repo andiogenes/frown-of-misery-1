@@ -16,14 +16,17 @@ the screen and flash storage. The Braids code and its 44.1 kHz adapter come from
 
 | Control | What it does |
 | --- | --- |
-| keys | play, 4 voices (one shape, one TIMBRE and COLOR, each voice its own pitch); the notes also go out over USB-MIDI |
+| keys | play: 4 voices sharing one shape, each with its own pitch, or MONO (legato, last note wins). Notes also go out over USB-MIDI. |
+| SELECT | the engine: Braids now; Rings and Clouds will be added here |
 | ALGORITHM | the shape: 48 of them, from CSAW to QUESTION MARK |
-| KNOB 1 / KNOB 2 | TIMBRE / COLOR; what they do depends on the shape, and the screen says |
-| KNOB 3 / KNOB 4 | attack / release, 0 ms … 24 s |
+| EDIT | the next page of parameters; KNOB 1–4 turn the four shown on screen |
+| page OSC | TIMBRE, COLOR (what they do depends on the shape, and the screen says), FINE tune ±50 cents, LEVEL |
+| page AMP | ATTACK, RELEASE (0 ms … 24 s), GLIDE (off … 24 s), VOICES (POLY 4 / MONO) |
 | OCT- / OCT+ | octave |
 | PRESETS | MIDI channel: OMNI, or 1–16 |
 | MASTER | volume |
 | MIDI in (USB, TRS) | notes with velocity, pitch bend ±2 semitones, a clock display |
+| screen | engine, shape, page, the four parameters, last note, and the audio interrupt's CPU load (peak over 0.5 s) |
 
 All settings are saved to flash 2 s after the last change, once nothing is sounding.
 SMK-37 builds also work (`--board smk37`), as they do in Dinghy.
@@ -71,6 +74,7 @@ The workflow pins fm1-emu to one commit (`FM1_EMU_REV`). Change it deliberately 
 firmware/src/frown.c     the app: voices, panel, screen, settings
 dsp/engine/fom_engine.*  the sound engine behind a small C API (C++, MIT)
 dsp/mi/                  Mutable Instruments' Braids + stmlib (MIT), the 44.1 kHz adapter, the freestanding shim
+dsp/ref/                 the float references: Rings and Clouds unmodified, host only; compare.py measures a port
 firmware/, tools/, tests/ Dinghy's platform, build and host mode
 site/, tools/make_site.py the GitHub Pages site and the web installer; tests/emu_smoke.mjs, tests/web_install_test.mjs
 web/                     the FM-1 update protocol over Web MIDI (Felucca, genkigenki)

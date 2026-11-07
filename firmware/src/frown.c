@@ -3,15 +3,18 @@
  * Built on Dinghy (zvenson), on Felucca's (Leo Kuroshita, Hügelton Instruments) and SLOOP's (isod89) platform.
  * This file is the app; the sound is dsp/engine/fom_engine.cc; everything below platform.c is Dinghy's, unchanged.
  *
- *   keys       play Braids, 4 voices paraphonic (one shape, one TIMBRE / COLOR, a pitch each); out over USB-MIDI too
- *   ALGORITHM  the shape, 48 of them
- *   KNOB 1, 2  TIMBRE, COLOR (what they do depends on the shape: the screen says)
- *   KNOB 3, 4  attack, release
+ *   keys       play; 4 voices paraphonic (one shape, a pitch each) or MONO (legato, last note wins); out over USB-MIDI
+ *   SELECT     the engine (Braids; Rings and Clouds to come)
+ *   ALGORITHM  Braids' shape, 48 of them
+ *   EDIT       the next page of parameters; KNOB 1..4 turn the four on the screen
+ *                OSC  TIMBRE, COLOR (what they do depends on the shape: the screen says), FINE tune, LEVEL
+ *                AMP  ATTACK, RELEASE, GLIDE, VOICES (POLY 4 / MONO)
  *   OCT- OCT+  the octave
  *   PRESETS    the MIDI channel: OMNI (in: all, out: 1) or 1..16
  *   MASTER     the volume (platform.c)
- *   MIDI in    notes from USB or the TRS jack, with their velocity; a MIDI clock shows its tempo
+ *   MIDI in    notes from USB or the TRS jack, with their velocity, pitch bend +-2; a MIDI clock shows its tempo
  *   SMK-37     the keys with velocity, the outer keys, the pads (white keys F3..G5), the pitch wheel (+-2 semitones)
+ *   the screen the engine, the shape, the page, the four parameters, the last note, CPU load of the audio interrupt
  *
  * All of it is kept in flash, 2 s after the last change, when nothing sounds.
  * Rules of the road (the chip has no FPU and no libgcc): integers only, no float, no 64-bit division.
@@ -27,20 +30,129 @@ static void app_idle(void);
 #include "fom_engine.h"
 #include "fm1_shapes.h"
 
+#ifdef DINGHY_HOST
+static uint32_t fm1_ticks(void) { return 0; }   /* (no timer on the host: the CPU meter reads 0 there) */
+#define FM1_TICKS_PER_US 24u
+#endif
+
 /* ---- the sound (runs in the audio ISR: keep it short, no flash, no screen) */
+static volatile uint32_t cpu_now, cpu_peak;     /* the audio ISR's load, per mille of its time budget */
+
 static void app_audio(int32_t *out, uint32_t n)
 {
+    uint32_t t0 = fm1_ticks(), dt, load;
     fom_render_add(out, n);
+    dt = fm1_ticks() - t0;
+    /* the budget of n frames at 44.1 kHz: n * 24 MHz / 44100 = n * 544.2 ticks */
+    load = n ? dt * 1000u / (n * 544u) : 0u;
+    cpu_now = load;
+    if (load > cpu_peak) cpu_peak = load;
+}
+
+/* ---- what survives a power-off: the panel, and every parameter of the engine */
+#define SET_VERSION 2u
+enum { V_POLY, V_MONO };
+static struct {
+    uint8_t version, oct, ch, engine, page, voices, pad[2];
+    int16_t p[FOM_NPARAM];
+} set;
+
+static void set_defaults(void)
+{
+    uint32_t p;
+    set.version = SET_VERSION;
+    set.oct = 0; set.ch = 0; set.engine = FOM_E_BRAIDS; set.page = 0; set.voices = V_POLY;
+    for (p = 0; p < FOM_NPARAM; p++) set.p[p] = fom_param_info(p)->def;
+}
+static int set_valid(void)
+{
+    uint32_t p;
+    if (set.version != SET_VERSION || (int8_t)set.oct < -2 || (int8_t)set.oct > 2 || set.ch > 16u ||
+        set.engine >= FOM_NENGINES || set.voices > V_MONO)
+        return 0;
+    for (p = 0; p < FOM_NPARAM; p++)
+        if (set.p[p] < fom_param_info(p)->min || set.p[p] > fom_param_info(p)->max) return 0;
+    return 1;
+}
+static void set_apply(void)
+{
+    uint32_t p;
+    fom_set_engine(set.engine);
+    for (p = 0; p < FOM_NPARAM; p++) fom_set_param(p, set.p[p]);
+}
+
+/* ---- the pages: what KNOB 1..4 turn, per engine. Parameters past FOM_NPARAM are the app's own. */
+enum { A_VOICES = FOM_NPARAM, A_NONE = 255 };
+#define NPAGE_MAX 4u
+typedef struct {
+    const char *name;
+    uint8_t npages;
+    const char *page[NPAGE_MAX];
+    uint8_t knob[NPAGE_MAX][4];
+} engine_ui_t;
+static const engine_ui_t ENGINES[FOM_NENGINES] = {
+    {"BRAIDS", 2, {"OSC", "AMP"},
+     {{FOM_P_TIMBRE, FOM_P_COLOR, FOM_P_FINE, FOM_P_LEVEL},
+      {FOM_P_ATTACK, FOM_P_RELEASE, FOM_P_GLIDE, A_VOICES}}},
+};
+static const engine_ui_t *ui(void) { return &ENGINES[set.engine]; }
+
+static const char *param_name(uint32_t p)
+{
+    if (p == A_VOICES) return "VOICES";
+    if (set.engine == FOM_E_BRAIDS && p == FOM_P_TIMBRE) return FM1_SHAPE_TIMBRE[set.p[FOM_P_SHAPE]];
+    if (set.engine == FOM_E_BRAIDS && p == FOM_P_COLOR) return FM1_SHAPE_COLOR[set.p[FOM_P_SHAPE]];
+    return fom_param_info(p)->name;
 }
 
 /* ---- notes (main loop): which of the engine's voices plays what */
 static struct { uint8_t note, on; uint32_t age; } voice[FOM_NV];
 static uint32_t ages, last_note = 255;
+static uint8_t mono_stack[16], mono_n;          /* MONO: the notes held, the newest last */
+
+static void all_off(void)
+{
+    uint32_t v;
+    for (v = 0; v < FOM_NV; v++) { voice[v].on = 0; fom_voice_release(v); }
+    mono_n = 0;
+}
+
+static void mono_sound(uint32_t note, uint32_t vel, int strike)
+{
+    voice[0].note = (uint8_t)note;
+    voice[0].on = 1;
+    fom_voice_play(0, note, (int32_t)(vel * 200u), strike);   /* one voice: louder than one of four */
+    last_note = note;
+}
+static void mono_on(uint32_t note, uint32_t vel)
+{
+    uint32_t i, j, legato = mono_n > 0;
+    for (i = j = 0; i < mono_n; i++)            /* (the same note again: to the top) */
+        if (mono_stack[i] != note) mono_stack[j++] = mono_stack[i];
+    mono_n = (uint8_t)j;
+    if (mono_n == sizeof mono_stack) {          /* full: forget the oldest */
+        for (i = 1; i < mono_n; i++) mono_stack[i - 1] = mono_stack[i];
+        mono_n--;
+    }
+    mono_stack[mono_n++] = (uint8_t)note;
+    mono_sound(note, vel, !legato);             /* legato: glide there, nothing restarts */
+}
+static void mono_off(uint32_t note)
+{
+    uint32_t i, j, top = mono_n ? mono_stack[mono_n - 1] : 255u;
+    for (i = j = 0; i < mono_n; i++)
+        if (mono_stack[i] != note) mono_stack[j++] = mono_stack[i];
+    mono_n = (uint8_t)j;
+    if (note != top) return;                    /* an older note let go: the sound stays */
+    if (mono_n) mono_sound(mono_stack[mono_n - 1], 100, 0);   /* back to the note still held */
+    else { voice[0].on = 0; fom_voice_release(0); }
+}
 
 static void play(uint32_t note, uint32_t vel)
 {
     uint32_t v, pick = 0, best = 0xFFFFFFFFu;
     if (note > 127u || !vel) return;
+    if (set.voices == V_MONO) { mono_on(note, vel); return; }
     for (v = 0; v < FOM_NV; v++) {              /* the same note, else a free voice, else the oldest */
         uint32_t score = voice[v].note == note && voice[v].on ? 0u                  /* the same note, held */
                        : voice[v].on ? 0x80000000u + voice[v].age                   /* held: the oldest goes */
@@ -56,6 +168,8 @@ static void play(uint32_t note, uint32_t vel)
 static void stop(uint32_t note)
 {
     uint32_t v;
+    if (note > 127u) return;
+    if (set.voices == V_MONO) { mono_off(note); return; }
     for (v = 0; v < FOM_NV; v++)
         if (voice[v].on && voice[v].note == note) {
             voice[v].on = 0;
@@ -70,37 +184,19 @@ static int quiet(void)                          /* nothing sounds, not even a re
     return 1;
 }
 
-/* ---- what survives a power-off */
-static struct {
-    uint8_t oct, ch, shape, atk, rel, pad[3];
-    uint16_t timbre, color;
-} set;
-static void set_defaults(void)
-{
-    set.oct = 0; set.ch = 0;
-    set.shape = 0;                              /* CSAW */
-    set.timbre = 8192; set.color = 0;
-    set.atk = 7; set.rel = 13;                  /* ~3 ms, ~190 ms */
-}
-static int set_valid(void)
-{
-    return (int8_t)set.oct >= -2 && (int8_t)set.oct <= 2 && set.ch <= 16u && set.shape < FM1_NSHAPES
-        && set.atk <= FOM_ENV_MAX && set.rel <= FOM_ENV_MAX && set.timbre <= 32767u && set.color <= 32767u;
-}
-static void set_apply(void)
-{
-    fom_set_shape(set.shape);
-    fom_set_timbre(set.timbre);
-    fom_set_color(set.color);
-    fom_set_env(set.atk, set.rel);
-}
-
 /* ---- the screen */
 #define C_ACC RGB(255, 52, 52)                  /* a sore red */
 #define C_KEY RGB(210, 210, 210)
 #define C_OFF RGB(90, 90, 90)
 #define C_TRACK RGB(40, 40, 40)
 #define KEY0 53u                                /* key 0 = F3 */
+#define Y_SHAPE 40
+#define Y_TABS 60
+#define Y_ROW0 82                               /* four rows of 18 px */
+#define Y_INFO 156
+#define Y_KEYS 176
+#define H_KEYS 40
+#define Y_STATUS 222
 static int black(uint32_t note) { return (0x54Au >> (note % 12u)) & 1u; }
 
 static char *put(char *p, const char *s) { while (*s) *p++ = *s++; return p; }
@@ -120,79 +216,124 @@ static char *put_note(char *p, uint32_t note)
     if (note < 12u) return put(p, "-1");
     return put_u(p, note / 12u - 1u);
 }
+static char *put_ms(char *p, uint32_t ms)       /* 0 ms .. 999 ms, 1.0 s .. 23.8 s */
+{
+    if (ms < 1000u) return put(put_u(p, ms), " ms");
+    p = put_u(p, ms / 1000u);
+    *p++ = '.';
+    return put(put_u(p, ms / 100u % 10u), " s");
+}
+
+static void draw_title(void)
+{
+    draw_text_box(0, 4, 240, &FONT_L, ui()->name, C_ACC, 1);
+}
 
 static void draw_shape(void)
 {
     char s[32], *p = s;
-    p = put_u(p, set.shape + 1u);
+    p = put_u(p, (uint32_t)set.p[FOM_P_SHAPE] + 1u);
     p = put(p, "/48  ");
-    p = put(p, FM1_SHAPE_NAME[set.shape]);
+    p = put(p, FM1_SHAPE_NAME[set.p[FOM_P_SHAPE]]);
     *p = 0;
-    draw_text_box(0, 48, 240, &FONT_S, s, C_WHITE, 1);
+    draw_text_box(0, Y_SHAPE, 240, &FONT_S, s, C_WHITE, 1);
 }
 
-static void draw_param(int32_t y, const char *label, uint32_t v)   /* a label and a bar, v 0..32767 */
+static void draw_tabs(void)                     /* the pages, the one shown in red */
 {
+    uint32_t i, w = 0;
+    int32_t x;
+    for (i = 0; i < ui()->npages; i++) w += text_w(&FONT_S, ui()->page[i]) + (i ? 24u : 0u);
     cv_begin(240, 16, C_BLACK);
-    cv_text(10, 0, &FONT_S, label, C_OFF);
-    cv_rect(80, 3, 150, 10, C_TRACK);
-    if (v >= 219u) cv_rect(80, 3, (int32_t)((v * 150u) >> 15), 10, C_ACC);
-    cv_blit(0, y);
+    x = (240 - (int32_t)w) / 2;
+    for (i = 0; i < ui()->npages; i++) {
+        uint32_t on = i == set.page;
+        int32_t x1 = cv_text(x, 0, &FONT_S, ui()->page[i], on ? C_ACC : C_OFF);
+        if (on) cv_rect(x, 15, x1 - x, 1, C_ACC);
+        x = x1 + 24;
+    }
+    cv_blit(0, Y_TABS);
 }
 
-static void draw_env(void)
+static int32_t param_get(uint32_t p) { return p == A_VOICES ? set.voices : p < FOM_NPARAM ? set.p[p] : 0; }
+
+static void draw_row(uint32_t k)                /* knob k's parameter on this page: its name, its value */
+{
+    uint32_t p = ui()->knob[set.page][k];
+    char s[24], *q = s, lab[8];
+    int32_t v = param_get(p);
+    cv_begin(240, 16, C_BLACK);
+    lab[0] = (char)('1' + k); lab[1] = ' '; lab[2] = 0;
+    cv_text(4, 0, &FONT_S, lab, C_TRACK);
+    if (p != A_NONE) {
+        cv_text(20, 0, &FONT_S, param_name(p), C_OFF);
+        if (p == A_VOICES) q = put(q, v == V_MONO ? "MONO" : "POLY 4");
+        else switch (fom_param_info(p)->kind) {
+        case FOM_K_BAR:
+            cv_rect(80, 3, 150, 10, C_TRACK);
+            if (v >= 219) cv_rect(80, 3, (int32_t)(((uint32_t)v * 150u) >> 15), 10, C_ACC);
+            break;
+        case FOM_K_TIME:
+            q = (p == FOM_P_GLIDE && !v) ? put(q, "OFF") : put_ms(q, fom_env_ms((uint32_t)v));
+            break;
+        case FOM_K_CENTS: {
+            int32_t c = v * 100 / 128;
+            *q++ = c < 0 ? '-' : '+';
+            q = put(put_u(q, (uint32_t)(c < 0 ? -c : c)), " ct");
+            break;
+        }
+        default:
+            q = put_u(q, (uint32_t)v);
+        }
+        *q = 0;
+        if (q != s) cv_text(80, 0, &FONT_S, s, C_WHITE);
+    }
+    cv_blit(0, Y_ROW0 + 18 * (int32_t)k);
+}
+
+static void draw_info(uint32_t src, uint32_t bpm, uint32_t running)   /* the last note, where it came from, the clock */
 {
     char s[40], *p = s;
-    p = put(p, "ATK ");
-    p = put_u(p, fom_env_ms(set.atk));
-    p = put(p, "ms  REL ");
-    p = put_u(p, fom_env_ms(set.rel));
-    p = put(p, "ms  ");
+    p = put(p, "NOTE ");
     p = put_note(p, last_note);
+    if (src) p = put(p, src == 2u ? "  TRS" : "  USB");
+    if (bpm) {
+        p = put(p, running ? "  CLOCK " : "  clock ");
+        p = put_u(p, bpm);
+    }
     *p = 0;
-    draw_text_box(0, 106, 240, &FONT_S, s, C_OFF, 1);
+    draw_text_box(0, Y_INFO, 240, &FONT_S, s, C_OFF, 1);
 }
 
 static void draw_keys(uint32_t lit)             /* bit k: key k sounds */
 {
     uint32_t k, w = 0;
-    cv_begin(240, 56, C_BLACK);
+    cv_begin(240, H_KEYS, C_BLACK);
     for (k = 0; k < 27u; k++)                   /* 16 white keys of 14 px from x = 8 */
         if (!black(KEY0 + k)) {
-            cv_rect(8 + (int32_t)w * 14, 0, 13, 56, lit >> k & 1u ? C_ACC : C_KEY);
+            cv_rect(8 + (int32_t)w * 14, 0, 13, H_KEYS, lit >> k & 1u ? C_ACC : C_KEY);
             w++;
         }
     for (k = 0, w = 0; k < 27u; k++)            /* the black ones on the line between two white */
         if (black(KEY0 + k))
-            cv_rect(8 + (int32_t)w * 14 - 5, 0, 9, 34, lit >> k & 1u ? C_ACC : C_BLACK);
+            cv_rect(8 + (int32_t)w * 14 - 5, 0, 9, H_KEYS * 6 / 10, lit >> k & 1u ? C_ACC : C_BLACK);
         else
             w++;
-    cv_blit(0, 148);
+    cv_blit(0, Y_KEYS);
 }
 
-static void draw_status(int32_t oct, uint32_t ch)
+static void draw_status(int32_t oct, uint32_t ch, uint32_t cpu)   /* cpu: per mille */
 {
-    char s[24] = "OCT +0  MIDI OMNI";
-    s[4] = oct < 0 ? '-' : '+';
-    s[5] = (char)('0' + (oct < 0 ? -oct : oct));
-    if (ch) {
-        s[13] = 'C'; s[14] = 'H'; s[15] = (char)(ch < 10u ? ' ' : '1'); s[16] = (char)('0' + ch % 10u);
-    }
-    draw_text_box(0, 214, 240, &FONT_S, s, C_OFF, 1);
-}
-
-static void draw_midi(uint32_t src, uint32_t bpm, uint32_t running)   /* where notes came from last, the clock */
-{
-    char s[32], *p = s;
-    p = put(p, src == 2u ? "TRS IN" : src == 1u ? "USB IN" : "");
-    if (bpm) {
-        if (p != s) p = put(p, "  ");
-        p = put(p, running ? "CLOCK " : "clock ");
-        p = put_u(p, bpm);
-        p = put(p, " BPM");
-    }
+    char s[40], *p = s;
+    p = put(p, "OCT ");
+    *p++ = oct < 0 ? '-' : '+';
+    *p++ = (char)('0' + (oct < 0 ? -oct : oct));
+    p = put(p, "  MIDI ");
+    p = ch ? put_u(put(p, "CH"), ch) : put(p, "OMNI");
+    p = put(p, "  CPU ");
+    p = put(put_u(p, (cpu + 5u) / 10u), "%");
     *p = 0;
-    draw_text_box(0, 126, 240, &FONT_S, s, C_OFF, 1);
+    draw_text_box(0, Y_STATUS, 240, &FONT_S, s, cpu >= 800u ? C_ACC : C_OFF, 1);
 }
 
 /* ---- MIDI in: from the main loop, and from app_idle while the screen draws (idle_ok) */
@@ -230,21 +371,28 @@ static void app_idle(void)
     if (idle_ok) midi_in();
 }
 
-static uint16_t nudge(uint16_t v, int32_t e)    /* a knob's detents on a 0..32767 value: 64 detents end to end */
+/* a knob's detents on parameter p: a bar moves 1/64 of its range a detent, a time or an index one step */
+static void knob_turn(uint32_t p, int32_t e)
 {
-    int32_t c = (int32_t)v + e * 512;
-    return (uint16_t)(c < 0 ? 0 : c > 32767 ? 32767 : c);
-}
-static uint8_t nudge_u8(uint8_t v, int32_t e, int32_t max)
-{
-    int32_t c = (int32_t)v + e;
-    return (uint8_t)(c < 0 ? 0 : c > max ? max : c);
+    if (p == A_VOICES) {
+        uint8_t v = (uint8_t)(e > 0 ? V_MONO : V_POLY);
+        if (v != set.voices) { all_off(); set.voices = v; }
+        return;
+    }
+    if (p >= FOM_NPARAM) return;
+    {
+        const fom_param_info_t *in = fom_param_info(p);
+        int32_t step = in->kind == FOM_K_BAR ? 512 : in->kind == FOM_K_CENTS ? 2 : 1;
+        int32_t c = set.p[p] + e * step;
+        set.p[p] = (int16_t)(c < in->min ? in->min : c > in->max ? in->max : c);
+        fom_set_param(p, set.p[p]);
+    }
 }
 
 static void app_main(void)
 {
-    uint32_t prev = 0, k, t_change = 0, dirty = 0, lit_drawn = ~0u, status_drawn = ~0u, midi_drawn = ~0u;
-    uint32_t shape_drawn = ~0u, timbre_drawn = ~0u, color_drawn = ~0u, env_drawn = ~0u;
+    uint32_t prev = 0, k, t_change = 0, dirty = 0, lit_drawn = ~0u, status_drawn = ~0u, info_drawn = ~0u;
+    uint32_t title_drawn = ~0u, shape_drawn = ~0u, tabs_drawn = ~0u, row_drawn[4], cpu_shown = 0, t_cpu = 0;
     uint8_t held[27] = {0};                     /* the note each key plays */
 #if BOARD_SMK37
     static const uint8_t WHITE[16] = {0, 2, 4, 6, 7, 9, 11, 12, 14, 16, 18, 19, 21, 23, 24, 26};   /* white key -> key */
@@ -252,13 +400,14 @@ static void app_main(void)
     smk_pw_t wheel = {0};
     smk_pad_events = 1;                         /* the pads as events (smk_pad_take): they play here, lit while they sound */
 #endif
+    for (k = 0; k < 4u; k++) row_drawn[k] = ~0u;
     fom_init();
     if (settings_load(&set, sizeof set) || !set_valid())
         set_defaults();
+    if (set.page >= ui()->npages) set.page = 0;
     set_apply();
 
     lcd_fill(0, 0, 240, 240, C_BLACK);
-    draw_text_box(0, 8, 240, &FONT_L, "FROWN", C_ACC, 1);
 
     for (;;) {
         uint32_t keys, down, up, rel, b, lit = 0, out_ch = set.ch ? set.ch - 1u : 0u, st;
@@ -298,18 +447,38 @@ static void app_main(void)
         b = fm1_input_edges(&rel);              /* buttons pressed since the last call (bit = button id) */
         if (b & (1u << BTN_OCT_DOWN) && oct > -2) { set.oct = (uint8_t)(oct - 1); dirty = 1; t_change = fm1_ms; }
         if (b & (1u << BTN_OCT_UP) && oct < 2) { set.oct = (uint8_t)(oct + 1); dirty = 1; t_change = fm1_ms; }
-        if ((e = fm1_enc_take(ENC_PRESETS)) != 0) { set.ch = nudge_u8(set.ch, e, 16); dirty = 1; t_change = fm1_ms; }
-        if ((e = fm1_enc_take(ENC_ALGORITHM)) != 0) {
-            set.shape = nudge_u8(set.shape, e, FM1_NSHAPES - 1);
-            fom_set_shape(set.shape); dirty = 1; t_change = fm1_ms;
+        if (b & (1u << BTN_EDIT)) { set.page = (uint8_t)((set.page + 1u) % ui()->npages); dirty = 1; t_change = fm1_ms; }
+        if ((e = fm1_enc_take(ENC_PRESETS)) != 0) {
+            int32_t c = (int32_t)set.ch + e;
+            set.ch = (uint8_t)(c < 0 ? 0 : c > 16 ? 16 : c);
+            dirty = 1; t_change = fm1_ms;
         }
-        if ((e = fm1_enc_take(ENC_KNOB1)) != 0) { set.timbre = nudge(set.timbre, e); fom_set_timbre(set.timbre); dirty = 1; t_change = fm1_ms; }
-        if ((e = fm1_enc_take(ENC_KNOB2)) != 0) { set.color = nudge(set.color, e); fom_set_color(set.color); dirty = 1; t_change = fm1_ms; }
-        if ((e = fm1_enc_take(ENC_KNOB3)) != 0) { set.atk = nudge_u8(set.atk, e, FOM_ENV_MAX); fom_set_env(set.atk, set.rel); dirty = 1; t_change = fm1_ms; }
-        if ((e = fm1_enc_take(ENC_KNOB4)) != 0) { set.rel = nudge_u8(set.rel, e, FOM_ENV_MAX); fom_set_env(set.atk, set.rel); dirty = 1; t_change = fm1_ms; }
+        if ((e = fm1_enc_take(ENC_SELECT)) != 0) {   /* the engine: only one so far, so this stays on Braids */
+            int32_t c = (int32_t)set.engine + e;
+            c = c < 0 ? 0 : c >= (int32_t)FOM_NENGINES ? (int32_t)FOM_NENGINES - 1 : c;
+            if ((uint32_t)c != set.engine) {
+                all_off();
+                set.engine = (uint8_t)c; set.page = 0;
+                fom_set_engine(set.engine);
+                dirty = 1; t_change = fm1_ms;
+            }
+        }
+        if ((e = fm1_enc_take(ENC_ALGORITHM)) != 0 && set.engine == FOM_E_BRAIDS) {
+            knob_turn(FOM_P_SHAPE, e); dirty = 1; t_change = fm1_ms;
+        }
+        for (k = 0; k < 4u; k++)
+            if ((e = fm1_enc_take(ENC_KNOB1 + k)) != 0 && ui()->knob[set.page][k] != A_NONE) {
+                knob_turn(ui()->knob[set.page][k], e); dirty = 1; t_change = fm1_ms;
+            }
 
         midi_in();
         if (clk_bpm && fm1_ms - clk_t0 > 2000u) clk_bpm = 0, clk_run = 0;   /* the clock has stopped coming */
+
+        if (fm1_ms - t_cpu >= 500u) {           /* the CPU meter: the peak of the last half second */
+            t_cpu = fm1_ms;
+            cpu_shown = cpu_peak;
+            cpu_peak = cpu_now;
+        }
 
         oct = (int8_t)set.oct;
         base = (uint32_t)((int32_t)KEY0 + 12 * oct);
@@ -320,6 +489,7 @@ static void app_main(void)
             fm1_led_key(KEY_LED(k), lit >> k & 1u);
         fm1_led_key(BTN_OCT_DOWN, oct < 0);
         fm1_led_key(BTN_OCT_UP, oct > 0);
+        fm1_led_key(BTN_EDIT, set.page != 0);
         fm1_led_key(BTN_PLAY, clk_run || (clk_bpm && fm1_ms - clk_beat_ms < 80u));   /* lit: running; a blink a beat */
 #if BOARD_SMK37
         for (k = 0; k < 16u; k++) {             /* a pad glows red while its key sounds */
@@ -330,17 +500,31 @@ static void app_main(void)
 #endif
 
         idle_ok = 1;                            /* the drawing below may read MIDI meanwhile (LCD_IDLE) */
-        if (set.shape != shape_drawn) {
-            shape_drawn = set.shape;
+        if (set.engine != title_drawn) { title_drawn = set.engine; draw_title(); tabs_drawn = ~0u; }
+        if ((uint32_t)set.p[FOM_P_SHAPE] != shape_drawn) {
+            shape_drawn = (uint32_t)set.p[FOM_P_SHAPE];
             draw_shape();
-            timbre_drawn = color_drawn = ~0u;   /* their labels follow the shape */
+            for (k = 0; k < 4u; k++) row_drawn[k] = ~0u;   /* TIMBRE's and COLOR's names follow the shape */
         }
-        if (set.timbre != timbre_drawn) { timbre_drawn = set.timbre; draw_param(68, FM1_SHAPE_TIMBRE[set.shape], set.timbre); }
-        if (set.color != color_drawn) { color_drawn = set.color; draw_param(86, FM1_SHAPE_COLOR[set.shape], set.color); }
-        if ((st = set.atk | (uint32_t)set.rel << 8 | last_note << 16) != env_drawn) { env_drawn = st; draw_env(); }
+        if ((st = set.page | set.engine << 4) != tabs_drawn) {
+            tabs_drawn = st;
+            draw_tabs();
+            for (k = 0; k < 4u; k++) row_drawn[k] = ~0u;
+        }
+        for (k = 0; k < 4u; k++)
+            if ((st = (uint32_t)(param_get(ui()->knob[set.page][k]) & 0xFFFF)) != row_drawn[k]) {
+                row_drawn[k] = st;
+                draw_row(k);
+            }
+        if ((st = last_note | midi_src << 8 | clk_bpm << 10 | clk_run << 20) != info_drawn) {
+            info_drawn = st;
+            draw_info(midi_src, clk_bpm, clk_run);
+        }
         if (lit != lit_drawn) { lit_drawn = lit; draw_keys(lit); }   /* redraw only what changed */
-        if ((st = (uint32_t)(oct + 2) | (uint32_t)set.ch << 4) != status_drawn) { status_drawn = st; draw_status(oct, set.ch); }
-        if ((st = midi_src | clk_bpm << 2 | clk_run << 12) != midi_drawn) { midi_drawn = st; draw_midi(midi_src, clk_bpm, clk_run); }
+        if ((st = (uint32_t)(oct + 2) | (uint32_t)set.ch << 4 | (cpu_shown + 5u) / 10u << 9) != status_drawn) {
+            status_drawn = st;
+            draw_status(oct, set.ch, cpu_shown);
+        }
         idle_ok = 0;
 
         if (dirty && quiet() && fm1_ms - t_change > 2000u) {   /* 2 s after the change, when silent (an erase stalls the sound) */

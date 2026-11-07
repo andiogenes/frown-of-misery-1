@@ -87,6 +87,12 @@ jobs:
       - name: Host tests
         run: sh tests/run_tests.sh
 
+      # Rings and Clouds, Mutable's float code, on the host: the references the fixed-point ports are measured against
+      - name: Float references (dsp/ref)
+        run: |
+          python3 -m pip install numpy
+          make -C dsp/ref check
+
       # site/install.js on web/fm1ota.js against a simulated FM-1 / SMK-37: the whole image reaches the loader,
       # a cut-off install resumes, the wrong board or a foreign loader is refused
       - name: Web installer test

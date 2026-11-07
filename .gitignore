@@ -4,3 +4,4 @@ __pycache__/
 _site/
 emu-dist/
 fm1-emu/
+dsp/ref/build/

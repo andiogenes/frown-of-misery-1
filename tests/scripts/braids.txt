@@ -1,5 +1,7 @@
-# Braids: a chord on CSAW, TIMBRE swept up, then FM, PLUCKED (struck by each note-on) and a longer release.
-# Encoders: 1 ALGORITHM (shape), 2..5 KNOB1..4 (TIMBRE, COLOR, attack, release), 6 PRESETS (MIDI channel)
+# Braids: a chord on CSAW with TIMBRE swept up, then FM, then PLUCKED (struck by each note-on), then the AMP page:
+# a longer release, and MONO with a glide between legato notes.
+# Encoders: 0 SELECT (engine), 1 ALGORITHM (shape), 2..5 KNOB1..4, 6 PRESETS. Button 6: EDIT (the next page).
+# Page OSC: KNOB1 TIMBRE, KNOB2 COLOR, KNOB3 FINE, KNOB4 LEVEL. Page AMP: ATTACK, RELEASE, GLIDE, VOICES.
 200 keys 0x4880
 600 enc 2 8
 900 enc 2 8
@@ -19,7 +21,17 @@
 4000 midi 0x80 60 0
 4000 midi 0x80 64 0
 4000 midi 0x80 67 0
-4200 enc 5 4
+4100 btn 6
+4200 enc 3 4
 4400 keys 0x4880
 5000 keys 0
-6500 end
+5200 enc 1 -28
+5300 enc 5 1
+5400 enc 4 12
+5600 keys 0x80
+5900 keys 0x880
+6200 keys 0x4880
+6400 shot
+6600 keys 0x4800
+6900 keys 0
+8000 end
