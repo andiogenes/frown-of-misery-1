@@ -4,15 +4,19 @@
  * This file is the app; the sound is dsp/engine/fom_engine.cc; everything below platform.c is Dinghy's, unchanged.
  *
  *   keys       play; 4 voices paraphonic (one shape, a pitch each) or MONO (legato, last note wins); out over USB-MIDI
- *   SELECT     the engine (Braids; Rings and Clouds to come)
+ *   SELECT     the engine: BRAIDS or RINGS (Clouds to come)
  *   ALGORITHM  Braids' shape, 48 of them
  *   EDIT       the next page of parameters; KNOB 1..4 turn the four on the screen
- *                OSC  TIMBRE, COLOR (what they do depends on the shape: the screen says), FINE tune, LEVEL
+ *     BRAIDS     OSC  TIMBRE, COLOR (what they do depends on the shape: the screen says), FINE tune, LEVEL
  *                AMP  ATTACK, RELEASE, GLIDE, VOICES (POLY 4 / MONO)
+ *     RINGS      RES  STRUCTURE, BRIGHTNESS, DAMPING, POSITION (Rings' four knobs: its modal resonator)
+ *                PART POLY (1, 2, 4 voices taking the strikes in turn), FINE tune, LEVEL
+ *              Rings has no note-off: a key strikes, DAMPING decides how long it rings.
  *   OCT- OCT+  the octave
  *   PRESETS    the MIDI channel: OMNI (in: all, out: 1) or 1..16
  *   MASTER     the volume (platform.c)
- *   MIDI in    notes from USB or the TRS jack, with their velocity, pitch bend +-2; a MIDI clock shows its tempo
+ *   MIDI in    notes from USB or the TRS jack, with their velocity, pitch bend +-2; a MIDI clock shows its tempo;
+ *              program change 0, 1 (programs 1, 2 in most software) picks the engine, as SELECT does
  *   SMK-37     the keys with velocity, the outer keys, the pads (white keys F3..G5), the pitch wheel (+-2 semitones)
  *   the screen the engine, the shape, the page, the four parameters, the last note, CPU load of the audio interrupt
  *
@@ -94,6 +98,9 @@ static const engine_ui_t ENGINES[FOM_NENGINES] = {
     {"BRAIDS", 2, {"OSC", "AMP"},
      {{FOM_P_TIMBRE, FOM_P_COLOR, FOM_P_FINE, FOM_P_LEVEL},
       {FOM_P_ATTACK, FOM_P_RELEASE, FOM_P_GLIDE, A_VOICES}}},
+    {"RINGS", 2, {"RES", "PART"},
+     {{FOM_P_STRUCTURE, FOM_P_BRIGHTNESS, FOM_P_DAMPING, FOM_P_POSITION},
+      {FOM_P_POLY, FOM_P_FINE, FOM_P_LEVEL, A_NONE}}},
 };
 static const engine_ui_t *ui(void) { return &ENGINES[set.engine]; }
 
@@ -152,7 +159,8 @@ static void play(uint32_t note, uint32_t vel)
 {
     uint32_t v, pick = 0, best = 0xFFFFFFFFu;
     if (note > 127u || !vel) return;
-    if (set.voices == V_MONO) { mono_on(note, vel); return; }
+    if (set.engine == FOM_E_RINGS) fom_strike(note, vel);   /* (voice[] below only keeps the keys lit) */
+    else if (set.voices == V_MONO) { mono_on(note, vel); return; }
     for (v = 0; v < FOM_NV; v++) {              /* the same note, else a free voice, else the oldest */
         uint32_t score = voice[v].note == note && voice[v].on ? 0u                  /* the same note, held */
                        : voice[v].on ? 0x80000000u + voice[v].age                   /* held: the oldest goes */
@@ -162,33 +170,31 @@ static void play(uint32_t note, uint32_t vel)
     voice[pick].note = (uint8_t)note;
     voice[pick].on = 1;
     voice[pick].age = ++ages;
-    fom_voice_play(pick, note, (int32_t)(vel * 90u), 1);   /* 127 -> 11430: four voices stay under full scale */
+    if (set.engine != FOM_E_RINGS)
+        fom_voice_play(pick, note, (int32_t)(vel * 90u), 1);   /* 127 -> 11430: four voices stay under full scale */
     last_note = note;
 }
 static void stop(uint32_t note)
 {
     uint32_t v;
     if (note > 127u) return;
-    if (set.voices == V_MONO) { mono_off(note); return; }
+    if (set.engine != FOM_E_RINGS && set.voices == V_MONO) { mono_off(note); return; }
     for (v = 0; v < FOM_NV; v++)
         if (voice[v].on && voice[v].note == note) {
             voice[v].on = 0;
-            fom_voice_release(v);
+            if (set.engine != FOM_E_RINGS) fom_voice_release(v);   /* (Rings: no note-off) */
         }
 }
-static int quiet(void)                          /* nothing sounds, not even a release */
+static int quiet(void)                          /* nothing sounds, not even a release or a ringing resonator */
 {
-    uint32_t v;
-    for (v = 0; v < FOM_NV; v++)
-        if (fom_voice_sounding(v)) return 0;
-    return 1;
+    return !fom_sounding();
 }
 
 /* ---- the screen */
 #define C_ACC RGB(255, 52, 52)                  /* a sore red */
 #define C_KEY RGB(210, 210, 210)
 #define C_OFF RGB(90, 90, 90)
-#define C_TRACK RGB(40, 40, 40)
+#define C_TRACK RGB(40, 40, 40)                /* (also the CPU bar: dim, 2 px, under the status line) */
 #define KEY0 53u                                /* key 0 = F3 */
 #define Y_SHAPE 40
 #define Y_TABS 60
@@ -229,12 +235,16 @@ static void draw_title(void)
     draw_text_box(0, 4, 240, &FONT_L, ui()->name, C_ACC, 1);
 }
 
-static void draw_shape(void)
+static void draw_shape(void)                    /* the line under the engine's name: Braids' shape, Rings' model */
 {
     char s[32], *p = s;
-    p = put_u(p, (uint32_t)set.p[FOM_P_SHAPE] + 1u);
-    p = put(p, "/48  ");
-    p = put(p, FM1_SHAPE_NAME[set.p[FOM_P_SHAPE]]);
+    if (set.engine == FOM_E_RINGS) {
+        p = put(p, "MODAL RESONATOR");
+    } else {
+        p = put_u(p, (uint32_t)set.p[FOM_P_SHAPE] + 1u);
+        p = put(p, "/48  ");
+        p = put(p, FM1_SHAPE_NAME[set.p[FOM_P_SHAPE]]);
+    }
     *p = 0;
     draw_text_box(0, Y_SHAPE, 240, &FONT_S, s, C_WHITE, 1);
 }
@@ -275,6 +285,9 @@ static void draw_row(uint32_t k)                /* knob k's parameter on this pa
             break;
         case FOM_K_TIME:
             q = (p == FOM_P_GLIDE && !v) ? put(q, "OFF") : put_ms(q, fom_env_ms((uint32_t)v));
+            break;
+        case FOM_K_POLY:
+            q = put(put_u(q, 1u << (uint32_t)v), v ? " VOICES" : " VOICE");
             break;
         case FOM_K_CENTS: {
             int32_t c = v * 100 / 128;
@@ -334,6 +347,24 @@ static void draw_status(int32_t oct, uint32_t ch, uint32_t cpu)   /* cpu: per mi
     p = put(put_u(p, (cpu + 5u) / 10u), "%");
     *p = 0;
     draw_text_box(0, Y_STATUS, 240, &FONT_S, s, cpu >= 800u ? C_ACC : C_OFF, 1);
+    {   /* and as a bar on the bottom two rows, 2.4 px a percent: a glance, and tests/emu_smoke.mjs reads it */
+        uint32_t w = cpu * 240u / 1000u;
+        if (w > 240u) w = 240u;
+        lcd_fill(0, 238, 240, 2, C_BLACK);
+        if (w) lcd_fill(0, 238, w, 2, cpu >= 800u ? C_ACC : C_TRACK);
+    }
+}
+
+/* ---- the engine: SELECT or a MIDI program change */
+static uint32_t engine_changed;                 /* set when it changes: the main loop saves it */
+static void set_engine(uint32_t e)
+{
+    if (e >= FOM_NENGINES || e == set.engine) return;
+    all_off();
+    set.engine = (uint8_t)e;
+    set.page = 0;
+    fom_set_engine(set.engine);
+    engine_changed = 1;
 }
 
 /* ---- MIDI in: from the main loop, and from app_idle while the screen draws (idle_ok) */
@@ -364,6 +395,7 @@ static void midi_in(void)
         if (ty == 0x90u && d2) { play(d1, d2); midi_src = (uint32_t)src; }
         else if (ty == 0x80u || ty == 0x90u) stop(d1);
         else if (ty == 0xE0u) fom_set_bend(((int32_t)((uint32_t)d2 << 7 | d1) - 8192) >> 5);   /* +-2 semitones */
+        else if (ty == 0xC0u) set_engine(d1);                 /* program change: the engine */
     }
 }
 static void app_idle(void)
@@ -453,16 +485,11 @@ static void app_main(void)
             set.ch = (uint8_t)(c < 0 ? 0 : c > 16 ? 16 : c);
             dirty = 1; t_change = fm1_ms;
         }
-        if ((e = fm1_enc_take(ENC_SELECT)) != 0) {   /* the engine: only one so far, so this stays on Braids */
+        if ((e = fm1_enc_take(ENC_SELECT)) != 0) {   /* the engine */
             int32_t c = (int32_t)set.engine + e;
-            c = c < 0 ? 0 : c >= (int32_t)FOM_NENGINES ? (int32_t)FOM_NENGINES - 1 : c;
-            if ((uint32_t)c != set.engine) {
-                all_off();
-                set.engine = (uint8_t)c; set.page = 0;
-                fom_set_engine(set.engine);
-                dirty = 1; t_change = fm1_ms;
-            }
+            set_engine((uint32_t)(c < 0 ? 0 : c >= (int32_t)FOM_NENGINES ? (int32_t)FOM_NENGINES - 1 : c));
         }
+        if (engine_changed) { engine_changed = 0; dirty = 1; t_change = fm1_ms; }
         if ((e = fm1_enc_take(ENC_ALGORITHM)) != 0 && set.engine == FOM_E_BRAIDS) {
             knob_turn(FOM_P_SHAPE, e); dirty = 1; t_change = fm1_ms;
         }
@@ -501,8 +528,8 @@ static void app_main(void)
 
         idle_ok = 1;                            /* the drawing below may read MIDI meanwhile (LCD_IDLE) */
         if (set.engine != title_drawn) { title_drawn = set.engine; draw_title(); tabs_drawn = ~0u; }
-        if ((uint32_t)set.p[FOM_P_SHAPE] != shape_drawn) {
-            shape_drawn = (uint32_t)set.p[FOM_P_SHAPE];
+        if ((st = (uint32_t)set.p[FOM_P_SHAPE] | set.engine << 8) != shape_drawn) {
+            shape_drawn = st;
             draw_shape();
             for (k = 0; k < 4u; k++) row_drawn[k] = ~0u;   /* TIMBRE's and COLOR's names follow the shape */
         }

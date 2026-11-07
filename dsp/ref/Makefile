@@ -16,8 +16,8 @@ CLOUDS := eurorack/clouds/dsp/granular_processor.cc eurorack/clouds/dsp/correlat
           $(wildcard eurorack/clouds/dsp/pvoc/*.cc) eurorack/clouds/resources.cc
 STMLIB := eurorack/stmlib/dsp/units.cc eurorack/stmlib/dsp/atan.cc eurorack/stmlib/utils/random.cc
 
-.PHONY: all check clean
-all: $(BUILD)/ref_rings $(BUILD)/ref_clouds
+.PHONY: all check port clean
+all: $(BUILD)/ref_rings $(BUILD)/ref_clouds $(BUILD)/port_rings
 
 $(BUILD):
 	mkdir -p $(BUILD)
@@ -27,6 +27,27 @@ $(BUILD)/ref_rings: ref_rings.cc wav.h $(RINGS) $(STMLIB) | $(BUILD)
 
 $(BUILD)/ref_clouds: ref_clouds.cc wav.h $(CLOUDS) $(STMLIB) | $(BUILD)
 	$(CXX) $(CXXFLAGS) $(DEFS) $(INC) -o $@ ref_clouds.cc $(CLOUDS) $(STMLIB) -lm
+
+# Diagnostics only: Rings compiled at 44.1 kHz (a patched copy in build/, the tree stays unmodified), against the port
+# built without its 48 kHz-time compensation (FOM_RINGS_TEST_44K). What differs then is the port's arithmetic, not the
+# change of sample rate.
+build/eurorack44: $(RINGS) eurorack/rings/dsp/dsp.h
+	rm -rf $@ && mkdir -p $@ && cp -R eurorack/. $@/
+	sed -i 's/kSampleRate = 48000.0f/kSampleRate = 44100.0f/' $@/rings/dsp/dsp.h
+	grep -q 'kSampleRate = 44100.0f' $@/rings/dsp/dsp.h
+
+$(BUILD)/ref_rings44: ref_rings.cc wav.h build/eurorack44 | $(BUILD)
+	$(CXX) $(CXXFLAGS) $(DEFS) -Ibuild/eurorack44 -I. -o $@ ref_rings.cc $(subst eurorack/,build/eurorack44/,$(RINGS) $(STMLIB)) -lm
+
+$(BUILD)/port_rings: port_rings.cc wav.h ../engine/fom_rings.cc ../engine/fom_rings.h ../engine/fom_rings_tables.h | $(BUILD)
+	$(CXX) $(CXXFLAGS) -I../engine -I. -o $@ port_rings.cc ../engine/fom_rings.cc
+
+$(BUILD)/port_rings44: port_rings.cc wav.h ../engine/fom_rings.cc ../engine/fom_rings.h ../engine/fom_rings_tables.h | $(BUILD)
+	$(CXX) $(CXXFLAGS) -DFOM_RINGS_TEST_44K -I../engine -I. -o $@ port_rings.cc ../engine/fom_rings.cc
+
+# the fixed-point ports against the references (rings_matrix.py)
+port: $(BUILD)/ref_rings $(BUILD)/ref_rings44 $(BUILD)/port_rings $(BUILD)/port_rings44
+	python3 rings_matrix.py
 
 check: all
 	python3 compare.py --selftest

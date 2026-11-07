@@ -3,6 +3,7 @@
 
 #include "fm1_braids.h"
 #include "fm1_shapes.h"
+#include "fom_rings.h"
 
 static_assert(FM1_NSHAPES == braids::MACRO_OSC_SHAPE_LAST, "fm1_shapes.h is out of step with Braids' shapes");
 
@@ -25,6 +26,12 @@ const fom_param_info_t kParams[FOM_NPARAM] = {
     /* FOM_P_ATTACK  */ {"ATTACK", 0, FOM_ENV_MAX, 7, FOM_K_TIME},
     /* FOM_P_RELEASE */ {"REL", 0, FOM_ENV_MAX, 13, FOM_K_TIME},
     /* FOM_P_GLIDE   */ {"GLIDE", 0, FOM_ENV_MAX, 0, FOM_K_TIME},
+    /* Rings' knobs and their defaults (Resonator::Init, Part) */
+    /* FOM_P_STRUCTURE  */ {"STRUCT", 0, 32767, 8192, FOM_K_BAR},
+    /* FOM_P_BRIGHTNESS */ {"BRIGHT", 0, 32767, 16384, FOM_K_BAR},
+    /* FOM_P_DAMPING    */ {"DAMP", 0, 32767, 16384, FOM_K_BAR},
+    /* FOM_P_POSITION   */ {"POSN", 0, 32767, 9830, FOM_K_BAR},
+    /* FOM_P_POLY       */ {"POLY", 0, 2, 0, FOM_K_POLY},
 };
 
 /* Glide: a one-pole slew of the pitch, updated every kSub frames. kGlideK[i] = 65536 (1 - e^(-kSub / 2^i)),
@@ -44,6 +51,11 @@ struct Voice {
 };
 
 FOM_POOL fm1::BraidsVoice g_osc[FOM_NV];
+FOM_POOL fom::RingsModal g_rings;
+
+/* Rings' strikes, from the main loop to the ISR: a ring, one writer each side (w by the main loop, r by the ISR) */
+volatile uint32_t g_strike_w, g_strike_r;
+volatile uint8_t g_strike_note[8], g_strike_vel[8];
 FOM_POOL int16_t g_buf[kSub];
 Voice g_v[FOM_NV];
 
@@ -73,10 +85,53 @@ void fom_init(void)
     for (p = 0; p < FOM_NPARAM; p++) g_p[p] = kParams[p].def;
     g_engine = FOM_E_BRAIDS;
     g_bend = 0;
+    g_rings.Init();
+    g_strike_w = g_strike_r = 0;
     g_shape_now = 0xFFFFFFFFu;
 }
 
 void fom_set_engine(uint32_t e) { g_engine = e < FOM_NENGINES ? e : 0u; }
+
+void fom_strike(uint32_t note, uint32_t velocity)
+{
+    uint32_t w = g_strike_w;
+    if (w - g_strike_r >= 8u) return;           /* full: dropped */
+    g_strike_note[w & 7u] = (uint8_t)(note > 127u ? 127u : note);
+    g_strike_vel[w & 7u] = (uint8_t)(velocity > 127u ? 127u : velocity ? velocity : 1u);
+    g_strike_w = w + 1u;                        /* (published last: the ISR reads the entry only after this) */
+}
+
+int fom_sounding(void)
+{
+    uint32_t v;
+    if (g_engine == FOM_E_RINGS) return g_rings.sounding() || g_strike_w != g_strike_r;
+    for (v = 0; v < FOM_NV; v++)
+        if (g_v[v].gate || g_v[v].amp) return 1;
+    return 0;
+}
+
+static uint32_t q16(int32_t v) { return ((uint32_t)v << 1) | ((uint32_t)v >> 14); }   /* 0..32767 -> 0..65535 */
+
+static void render_rings(int32_t* out, uint32_t n)
+{
+    static const int32_t kPoly[3] = {1, 2, 4};
+    fom::RingsPatch patch = {q16(g_p[FOM_P_STRUCTURE]), q16(g_p[FOM_P_BRIGHTNESS]), q16(g_p[FOM_P_DAMPING]),
+                             q16(g_p[FOM_P_POSITION])};
+    int32_t fine = g_p[FOM_P_FINE] + g_bend;
+    g_rings.set_polyphony(kPoly[g_p[FOM_P_POLY]]);
+    g_rings.set_fine(fine);
+    /* At most one strike per 32 frames, as Rings takes one strum per 24-sample block: the struck voice is the
+     * active one, which alone gets the exciter. Four strikes in one block would leave three voices silent. A chord
+     * spreads over ~2 ms. */
+    for (uint32_t s0 = 0; s0 < n; s0 += 32u) {
+        uint32_t r = g_strike_r;
+        if (r != g_strike_w) {
+            g_rings.Strike(g_strike_note[r & 7u], fine, g_strike_vel[r & 7u]);
+            g_strike_r = r + 1u;
+        }
+        g_rings.Render(patch, g_p[FOM_P_LEVEL], out + 2u * s0, n - s0 < 32u ? n - s0 : 32u);
+    }
+}
 
 void fom_set_param(uint32_t p, int32_t v)
 {
@@ -116,6 +171,7 @@ void fom_render_add(int32_t *out, uint32_t n)
     int32_t up = 0x7FFF00 >> g_p[FOM_P_ATTACK], down = 0x7FFF00 >> g_p[FOM_P_RELEASE];   /* Q23 per frame */
     int32_t gk = kGlideK[g_p[FOM_P_GLIDE]];
     if (n > FOM_BLOCK_MAX) n = FOM_BLOCK_MAX;
+    if (g_engine == FOM_E_RINGS) { render_rings(out, n); return; }
     for (v = 0; v < FOM_NV; v++) {
         Voice &vc = g_v[v];
         fm1::BraidsVoice &osc = g_osc[v];

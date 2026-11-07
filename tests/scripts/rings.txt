@@ -1,0 +1,26 @@
+# Rings: SELECT to RINGS, strikes on C3 E3 G3 C4 (no note-off: they ring), STRUCTURE and BRIGHTNESS up, then DAMPING
+# up for long rings, then POLY 4 (page PART) and a chord.
+# Encoders: 0 SELECT, 2..5 KNOB1..4. Button 6: EDIT. Page RES: STRUCTURE, BRIGHTNESS, DAMPING, POSITION.
+100 enc 0 1
+300 keys 0x80
+500 keys 0
+800 keys 0x800
+1000 keys 0
+1300 keys 0x4000
+1500 keys 0
+1700 enc 2 16
+1800 keys 0x80000
+2000 keys 0
+2200 shot
+2400 enc 3 20
+2600 keys 0x80
+2700 keys 0
+3000 enc 4 20
+3200 keys 0x800
+3300 keys 0
+4200 btn 6
+4300 enc 2 2
+4500 keys 0x4880
+4700 keys 0
+4900 shot
+7000 end

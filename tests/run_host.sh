@@ -10,14 +10,14 @@ N=frown; D=
 if [ "${BOARD:-fm1}" = smk37 ]; then N=frown-smk37; D=-DBOARD_SMK37=1; fi
 # The sound engine is C++ (dsp/, Braids vendored in dsp/mi): the host's own compiler and library, not dsp/mi/shim.
 O=build/host/obj; mkdir -p $O
-for s in dsp/engine/fom_engine.cc dsp/mi/fm1_braids.cc dsp/mi/braids/analog_oscillator.cc \
+for s in dsp/engine/fom_engine.cc dsp/engine/fom_rings.cc dsp/mi/fm1_braids.cc dsp/mi/braids/analog_oscillator.cc \
          dsp/mi/braids/digital_oscillator.cc dsp/mi/braids/macro_oscillator.cc dsp/mi/braids/resources.cc \
          dsp/mi/stmlib/utils/random.cc; do
     c++ -O2 -std=c++11 -fno-exceptions -fno-rtti -Idsp/mi -Idsp/engine -Idsp -c "$s" -o "$O/$(basename "$s" .cc).o"
 done
 cc -O2 -Wall -Wno-unused-function -DDINGHY_HOST $D -DAPP_VER="\"${APP_VER:-dev}\"" -Ifirmware/hal -Ifirmware/src -Ifirmware/gen \
     -Idsp/engine -c firmware/src/frown.c -o $O/frown.o
-c++ -o build/host/$N $O/frown.o $O/fom_engine.o $O/fm1_braids.o $O/analog_oscillator.o $O/digital_oscillator.o \
+c++ -o build/host/$N $O/frown.o $O/fom_engine.o $O/fom_rings.o $O/fm1_braids.o $O/analog_oscillator.o $O/digital_oscillator.o \
     $O/macro_oscillator.o $O/resources.o $O/random.o
 build/host/$N build/host/$N ${1:+"$1"}
 python3 - "$N" <<'PY'

@@ -71,7 +71,7 @@ int main(int argc, char** argv)
     part.set_polyphony(poly);
     part.set_model(static_cast<rings::ResonatorModel>(model));
 
-    const int rate = 48000, block = (int)rings::kMaxBlockSize;
+    const int rate = (int)rings::kSampleRate, block = (int)rings::kMaxBlockSize;   // (48 kHz; 44.1 in the diagnostic build)
     const long total = (long)(seconds * rate), period = (long)(every * rate);
     std::vector<int16_t> out;
     out.reserve(total * 2);
@@ -106,6 +106,6 @@ int main(int argc, char** argv)
         }
     }
     if (!fomref::write_wav(argv[1], out, 2, rate)) { std::perror(argv[1]); return 1; }
-    std::printf("%s: Rings model %d, poly %d, %zu notes, %.2f s at 48 kHz\n", argv[1], model, poly, notes.size(), seconds);
+    std::printf("%s: Rings model %d, poly %d, %zu notes, %.2f s at %d Hz\n", argv[1], model, poly, notes.size(), seconds, rate);
     return 0;
 }

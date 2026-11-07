@@ -93,6 +93,10 @@ jobs:
           python3 -m pip install numpy
           make -C dsp/ref check
 
+      # The fixed-point Rings against the float original over the knobs' range (dsp/ref/rings_matrix.py)
+      - name: Rings port vs reference
+        run: make -C dsp/ref port
+
       # site/install.js on web/fm1ota.js against a simulated FM-1 / SMK-37: the whole image reaches the loader,
       # a cut-off install resumes, the wrong board or a foreign loader is refused
       - name: Web installer test
@@ -130,7 +134,8 @@ jobs:
       - name: Assemble the site
         run: python3 tools/make_site.py emu-dist _site --sha "$GITHUB_SHA" --emu-rev "$FM1_EMU_REV"
 
-      # The emulator, as served, boots this build: audio keeps coming, the screen draws, a MIDI note sounds.
+      # The emulator, as served, boots this build: audio keeps coming, the screen draws, a chord sounds on every
+      # engine, and the firmware's own CPU meter stays under 70 % at the FM-1's 240 MHz.
       - name: Emulator smoke test
         run: node tests/emu_smoke.mjs _site/emu _site/frown.fwsc
 

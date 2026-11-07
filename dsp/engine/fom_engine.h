@@ -8,6 +8,8 @@
  *
  * Braids: four paraphonic voices sharing one shape, TIMBRE and COLOR, each with its own pitch, a click-free
  * amplitude glide (attack / release) and a pitch glide.
+ * Rings: the modal resonator (dsp/engine/fom_rings.cc), 1, 2 or 4 voices taking the strikes in turn; a note-on
+ * strikes (fom_strike), there is no note-off: DAMPING decides how long it rings.
  *
  * Threading: fom_render_add() runs in the audio ISR. Everything else is called from the main loop and only
  * stores 32-bit values the ISR reads, written in an order that is safe to see half-done (the pitch before the
@@ -27,6 +29,7 @@ extern "C" {
 
 enum {                         /* engines */
     FOM_E_BRAIDS,
+    FOM_E_RINGS,
     FOM_NENGINES
 };
 
@@ -39,12 +42,17 @@ enum {                         /* parameters (all engines; each engine reads the
     FOM_P_ATTACK,              /* envelope times, 0..FOM_ENV_MAX: a full sweep takes 2^index frames */
     FOM_P_RELEASE,
     FOM_P_GLIDE,               /* pitch glide, 0 (off)..FOM_ENV_MAX: a time constant of 2^index frames */
+    FOM_P_STRUCTURE,           /* Rings' four knobs, 0..32767 */
+    FOM_P_BRIGHTNESS,
+    FOM_P_DAMPING,
+    FOM_P_POSITION,
+    FOM_P_POLY,                /* Rings' polyphony: 0, 1, 2 = 1, 2, 4 voices */
     FOM_NPARAM
 };
 #define FOM_ENV_MAX 20u
 
 /* How a parameter is shown and stored. */
-enum { FOM_K_BAR, FOM_K_TIME, FOM_K_CENTS, FOM_K_INDEX };
+enum { FOM_K_BAR, FOM_K_TIME, FOM_K_CENTS, FOM_K_INDEX, FOM_K_POLY };
 typedef struct {
     const char *name;          /* <= 6 characters */
     int16_t min, max, def;
@@ -64,6 +72,11 @@ void fom_set_bend(int32_t bend);
 void fom_voice_play(uint32_t v, uint32_t note, int32_t gate, int strike);
 void fom_voice_release(uint32_t v);
 int  fom_voice_sounding(uint32_t v);       /* its gate is up, or its release still rings */
+
+/* Rings: strike MIDI note `note` at velocity 1..127 on the next voice. Up to 8 strikes are queued between two
+ * audio blocks (a chord); more are dropped. */
+void fom_strike(uint32_t note, uint32_t velocity);
+int fom_sounding(void);                    /* any engine: something still rings (settings wait for silence) */
 
 /* Adds n stereo frames (L, R interleaved, n <= FOM_BLOCK_MAX) to out. The audio ISR calls this. */
 void fom_render_add(int32_t *out, uint32_t n);

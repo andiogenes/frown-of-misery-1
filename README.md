@@ -1,10 +1,10 @@
 # Frown of Misery
 
-**Mutable Instruments' Braids, and later Rings and Clouds, as a firmware for the M-VAVE FM-1.**
+**Mutable Instruments' Braids and Rings, and later Clouds, as a firmware for the M-VAVE FM-1.**
 
-> **Status: 0.0, a starting point.** Braids is in: 48 shapes, 4 voices sharing one shape, playable from the keys and
-> MIDI. The code compiles on a computer but has **not yet been built for the FM-1 or played on one**. Rings and Clouds
-> are still to come (see [Roadmap](#roadmap)).
+> **Status: early development.** Braids (48 shapes, 4 voices or mono with glide) has been played on an FM-1. Rings'
+> modal resonator is in: rewritten in fixed point and checked against Mutable's float code (`dsp/ref`); it runs in
+> the emulator but has not been played on a device yet. Clouds is still to come (see [Roadmap](#roadmap)).
 
 It is built on [Dinghy](https://github.com/zvenson/dinghy) (zvenson), the small template firmware that sits on
 Felucca's and SLOOP's FM-1 platform. Dinghy provides updates, the USB rescue, MIDI (USB and TRS), USB audio, the panel,
@@ -17,16 +17,18 @@ the screen and flash storage. The Braids code and its 44.1 kHz adapter come from
 | Control | What it does |
 | --- | --- |
 | keys | play: 4 voices sharing one shape, each with its own pitch, or MONO (legato, last note wins). Notes also go out over USB-MIDI. |
-| SELECT | the engine: Braids now; Rings and Clouds will be added here |
+| SELECT | the engine: BRAIDS or RINGS (MIDI program change 1 / 2 does the same) |
 | ALGORITHM | the shape: 48 of them, from CSAW to QUESTION MARK |
 | EDIT | the next page of parameters; KNOB 1–4 turn the four shown on screen |
 | page OSC | TIMBRE, COLOR (what they do depends on the shape, and the screen says), FINE tune ±50 cents, LEVEL |
 | page AMP | ATTACK, RELEASE (0 ms … 24 s), GLIDE (off … 24 s), VOICES (POLY 4 / MONO) |
+| RINGS page RES | STRUCTURE, BRIGHTNESS, DAMPING, POSITION: Rings' four knobs, its modal resonator |
+| RINGS page PART | POLY (1, 2 or 4 voices taking the strikes in turn), FINE tune, LEVEL. Rings has no note-off: a key strikes, DAMPING decides how long it rings. |
 | OCT- / OCT+ | octave |
 | PRESETS | MIDI channel: OMNI, or 1–16 |
 | MASTER | volume |
 | MIDI in (USB, TRS) | notes with velocity, pitch bend ±2 semitones, a clock display |
-| screen | engine, shape, page, the four parameters, last note, and the audio interrupt's CPU load (peak over 0.5 s) |
+| screen | engine, shape, page, the four parameters, last note, and the audio interrupt's CPU load (peak over 0.5 s; also the thin bar along the bottom) |
 
 All settings are saved to flash 2 s after the last change, once nothing is sounding.
 SMK-37 builds also work (`--board smk37`), as they do in Dinghy.
@@ -87,8 +89,9 @@ it ports almost unchanged. Rings and Clouds were written for chips with floating
 needs a **fixed-point rewrite**, not a port.
 
 1. **Braids on the device**: build, flash, check pitch, CPU load and every shape by ear.
-2. **Rings**, rewritten in fixed point: the modal resonator first (it is the cheapest of its models), then
-   sympathetic strings and the string model, with polyphony as the CPU budget allows.
+2. **Rings**, rewritten in fixed point: the modal resonator is done (`dsp/engine/fom_rings.cc`; against the float
+   original at the same rate it matches at 40-60 dB SNR, `make -C dsp/ref port`). Next: sympathetic strings and the
+   string model.
 3. **Clouds**, rewritten in fixed point: the granular mode first, using a buffer of about 118 KB in `.pool`
    (336 KB is free), then pitch shifter, looping delay and spectral as the budget allows. It takes the Braids or
    Rings voice as its input.
