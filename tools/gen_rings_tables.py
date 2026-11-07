@@ -36,6 +36,8 @@ def main():
     stiff_q24 = [round(v * (1 << 24)) for v in stiffness]
     exp2_q30 = [round(2.0 ** (i / 256.0) * (1 << 30)) for i in range(257)]   # 2^(i/256), Q30
     note_q32 = [round(440.0 * 2.0 ** ((n - 69) / 12.0) / RATE * 2 ** 32) for n in range(128)]   # f / fs, Q32
+    # stmlib's SoftLimit(x) = x (27 + x^2) / (27 + 9 x^2) as a gain over |x| in [0, 4], 64 points per unit, Q16
+    soft_q16 = [round((27 + (i / 64) ** 2) / (27 + 9 * (i / 64) ** 2) * 65536) for i in range(257)]
     assert max(q_q8) < 2 ** 32 and max(note_q32) < 2 ** 32
 
     OUT.write_text(f"""/* SPDX-License-Identifier: MIT
@@ -61,6 +63,11 @@ static const int32_t kRingsStiffnessQ24[257] = {{
 /* 2^(i / 256), Q30: the fraction of an octave (exp2 of a fixed-point number) */
 static const uint32_t kExp2FracQ30[257] = {{
 {rows(exp2_q30, 6, "{}u")}
+}};
+
+/* SoftLimit's gain (27 + x^2) / (27 + 9 x^2) for |x| = i / 64, 0..4, Q16 */
+static const uint32_t kSoftLimitGainQ16[257] = {{
+{rows(soft_q16, 8, "{}u")}
 }};
 
 /* MIDI note n -> frequency / {RATE} Hz, Q32 */

@@ -28,6 +28,7 @@ uint32_t udiv64(uint64_t n, uint32_t d)
 }
 
 inline int32_t mulq(int32_t a, int32_t b, int shift) { return (int32_t)(((int64_t)a * b) >> shift); }
+inline int32_t mulhi(int32_t a, int32_t b) { return (int32_t)(((int64_t)a * b) >> 32); }
 
 /* 2^x, x in Q16 (-16..15), Q16 */
 uint32_t exp2_q16(int32_t x)
@@ -70,16 +71,23 @@ int32_t tan_dirty_q24(uint32_t f)
     return (int32_t)((fq * inner) >> 24);
 }
 
-/* stmlib's SoftLimit: x (27 + x^2) / (27 + 9 x^2), Q24 -> Q24. The ratio (in (1/9, 1]) through a 32-bit division:
- * num and den in Q8, |x| clamped to 8 (SoftLimit is ~ +-1 out there anyway). */
+/* stmlib's SoftLimit: x (27 + x^2) / (27 + 9 x^2), Q24 -> Q24. The gain (27 + x^2) / (27 + 9 x^2) from a table for
+ * |x| < 4 (it runs for every sample of both outputs: a division each would cost more than it is worth); out there,
+ * rarely, through a 32-bit division, |x| clamped to 8 (SoftLimit is ~ +-1.2 there anyway). */
 int32_t soft_limit(int32_t x)
 {
     int32_t ax = x < 0 ? (x == INT32_MIN_ ? 0x7FFFFFFF : -x) : x;
-    if (ax > (8 << 24)) ax = 8 << 24;
-    uint32_t x2 = (uint32_t)(((int64_t)ax * ax) >> 40);   /* Q8 */
-    uint32_t num = 27u * 256u + x2, den = 27u * 256u + 9u * x2;
-    uint32_t ratio = (num << 16) / den;                     /* Q16 */
-    int32_t y = (int32_t)(((int64_t)ax * ratio) >> 16);
+    uint32_t gain;
+    if (ax < (4 << 24)) {
+        uint32_t i = (uint32_t)ax >> 18, f = ((uint32_t)ax >> 2) & 0xFFFFu;   /* x * 64: index, fraction Q16 */
+        uint32_t a = kSoftLimitGainQ16[i], b = kSoftLimitGainQ16[i + 1];
+        gain = a - (uint32_t)(((uint64_t)(a - b) * f) >> 16);         /* (the gain falls with |x|) */
+    } else {
+        if (ax > (8 << 24)) ax = 8 << 24;
+        uint32_t x2 = (uint32_t)(((int64_t)ax * ax) >> 40);           /* Q8 */
+        gain = ((27u * 256u + x2) << 16) / (27u * 256u + 9u * x2);
+    }
+    int32_t y = (int32_t)(((int64_t)ax * gain) >> 16);
     return x < 0 ? -y : y;
 }
 
@@ -238,9 +246,12 @@ void ModalVoice::Render(const RingsPatch& patch, bool active, int32_t* odd, int3
     int64_t eh = udiv64((uint64_t)1 << 48, (uint32_t)eden);
     bool ex_live = ex_s1_ || ex_s2_ || has_pending_;
 
-    int32_t peak = 0;
+    /* ---- the resonators' input for this run (n <= 32): the excitation filter's output * 0.125 */
+    int32_t xin[32];
+    bool any_input = false;
+    if (n > 32) n = 32;
     for (size_t k = 0; k < n; ++k) {
-        int32_t x = 0;                                                 /* the resonators' input, Q24 */
+        int32_t x = 0;                                                 /* Q24 */
         if (has_pending_) {
             x = pending_;
             has_pending_ = false;
@@ -252,22 +263,45 @@ void ModalVoice::Render(const RingsPatch& patch, bool active, int32_t* odd, int3
             ex_s2_ = ((eg * bp) >> 24) + lp;
             x = (int32_t)lp;
         }
-        x >>= 3;                                                       /* Resonator::Process: input * 0.125 */
-        int64_t o = 0, e = 0;
-        for (int32_t i = 0; i < num_modes_; ++i) {
-            /* stmlib Svf, band-pass */
-            int32_t s1 = s1_[i], s2 = s2_[i];
-            int32_t hp = mulq(x - mulq(rg_[i], s1, 26) - s2, h_[i], 31);
-            int32_t ghp = mulq(g_[i], hp, 26);
-            int32_t bp = ghp + s1;
-            s1_[i] = ghp + bp;
-            int32_t gbp = mulq(g_[i], bp, 26);
-            int32_t lp = gbp + s2;
-            s2_[i] = gbp + lp;
-            int64_t v = (int64_t)amp_[i] * bp;                         /* Q39 */
-            if (i & 1) e += v; else o += v;
+        xin[k] = x >> 3;                                               /* Resonator::Process: input * 0.125 */
+        any_input |= xin[k] != 0;
+    }
+
+    /* ---- the modes: mode-outer, sample-inner, so a mode's state and coefficients stay in registers for the whole
+     * run (Rings loops the other way; every mode is independent, so the result is the same). Odd modes to o[],
+     * even to e[] (Resonator::Process's odd / even), each scaled by its pickup amplitude. A mode that has decayed
+     * under ~-130 dB with no input coming sleeps: high partials die fast, so a ringing note soon needs far fewer
+     * than its 60 modes. */
+    int32_t o[32], e[32];
+    for (size_t k = 0; k < n; ++k) o[k] = e[k] = 0;
+    const int32_t modes = num_modes_;
+    for (int32_t i = 0; i < modes; ++i) {
+        int32_t s1 = s1_[i], s2 = s2_[i];
+        if (!any_input && s1 < 4 && s1 > -4 && s2 < 4 && s2 > -4) {   /* asleep */
+            s1_[i] = s2_[i] = 0;
+            continue;
         }
-        int32_t ov = (int32_t)(o >> 15), ev = (int32_t)(e >> 15);
+        const int32_t g = g_[i], rg = rg_[i], h = h_[i], a = amp_[i];
+        int32_t* __restrict d = (i & 1) ? e : o;
+        for (size_t k = 0; k < n; ++k) {
+            /* stmlib Svf, band-pass */
+            /* (x - rg s1 - s2) h: the high word of the product, doubled. Written as (a * h) >> 31 the compiler
+             * folds the shift into h, which then needs 64 bits, and makes it three multiplies. */
+            int32_t hp = mulhi(xin[k] - mulq(rg, s1, 26) - s2, h) << 1;
+            int32_t ghp = mulq(g, hp, 26);
+            int32_t bp = ghp + s1;
+            s1 = ghp + bp;
+            int32_t gbp = mulq(g, bp, 26);
+            int32_t lp = gbp + s2;
+            s2 = gbp + lp;
+            d[k] += (int32_t)(((int64_t)a * bp) >> 15);               /* Q15 * Q24 >> 15 = Q24 */
+        }
+        s1_[i] = s1;
+        s2_[i] = s2;
+    }
+    int32_t peak = 0;
+    for (size_t k = 0; k < n; ++k) {
+        int32_t ov = o[k], ev = e[k];
         odd[k] += ov;
         even[k] += ev;
         int32_t a = ov < 0 ? -ov : ov, c = ev < 0 ? -ev : ev;
