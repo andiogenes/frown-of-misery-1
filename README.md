@@ -34,7 +34,7 @@ the screen and flash storage. The Braids code and its 44.1 kHz adapter come from
 | PRESETS | MIDI channel: OMNI, or 1–16 |
 | MASTER | volume |
 | MIDI in (USB, TRS) | notes with velocity, pitch bend ±2 semitones, a clock display |
-| screen | engine, shape, page, the four parameters, last note, the route (with Clouds' own share of the CPU after its box), and the audio interrupt's CPU load (peak over 0.5 s; also the thin bar along the bottom) |
+| screen | the faceplate of the module whose page is shown, after Mutable's panels: its name and subtitle, Braids' four-character display, Rings' polyphony and model LEDs, Clouds' FREEZE; the page's four knobs; the last note (and Clouds' own share of the CPU); the route as small plates joined by patch cables; the audio interrupt's CPU load (peak over 0.5 s; also the thin bar along the bottom) |
 
 All settings are saved to flash 2 s after the last change, once nothing is sounding.
 SMK-37 builds also work (`--board smk37`), as they do in Dinghy.

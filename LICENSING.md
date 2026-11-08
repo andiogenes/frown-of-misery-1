@@ -45,6 +45,15 @@ into the GPL-3.0-only firmware and stays reusable elsewhere. Nothing copied or a
 
 Dinghy's logo (the designburg signet, all rights reserved) is not part of this fork.
 
+## The screen
+
+The screen (`firmware/src/frown.c`, GPL-3.0-only) is drawn after the look of Mutable Instruments' panels: their
+light aluminium, dark lettering, teal and pink label pills, the lowercase subtitles ("macro oscillator", "resonator",
+"texture synthesizer"), Braids' four-character display (its shape codes from `braids/settings.cc`, MIT) and Rings'
+LEDs. Mutable's panel files are published under CC-BY-SA 3.0 (pichenettes/eurorack, `*/hardware_design/panel/`), and
+VCV Rack's Audible Instruments draws them too; Frown of Misery copies no artwork from either. Its knobs, plates,
+patch cables and the band's diamond chain are drawn anew in code. No Mutable Instruments logo appears.
+
 ## Trademarks
 
 "Felucca" and "Hügelton Instruments" are names of Hügelton Instruments; "M-VAVE", "FM-1", "SMK-37" and "MKE-P37"

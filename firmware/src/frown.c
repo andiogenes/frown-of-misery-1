@@ -216,18 +216,29 @@ static int quiet(void)                          /* nothing sounds, not even a re
     return !fom_sounding();
 }
 
-/* ---- the screen */
-#define C_ACC RGB(255, 52, 52)                  /* a sore red */
-#define C_KEY RGB(210, 210, 210)
-#define C_OFF RGB(90, 90, 90)
-#define C_TRACK RGB(40, 40, 40)                /* (also the CPU bar: dim, 2 px, under the status line) */
+/* ---- the screen: the faceplate of the module whose page is shown, after Mutable Instruments' panels (their light
+ * aluminium, dark DIN lettering, teal and pink label pills, the patterned band under the subtitle; drawn anew here:
+ * nothing of the panels' artwork is copied), knobs that turn, and the route as small plates and patch cables */
+#define C_PANEL RGB(226, 226, 222)                /* the aluminium */
+#define C_INK RGB(40, 40, 42)                     /* its lettering */
+#define C_INK2 RGB(118, 118, 120)
+#define C_BAND RGB(176, 176, 172)
+#define C_TEAL RGB(0, 146, 158)
+#define C_PINK RGB(222, 56, 92)
+#define C_KNOB RGB(56, 56, 58)
+#define C_SKIRT RGB(198, 198, 194)
+#define C_DARK RGB(104, 104, 106)                 /* the output box */
+#define C_LED RGB(255, 60, 30)
+#define C_LEDOFF RGB(70, 22, 16)
+#define C_ACC C_PINK
+#define C_TRACK RGB(40, 40, 40)                  /* (the CPU bar: dim, 2 px, along the bottom) */
 #define KEY0 53u                                /* key 0 = F3 */
-#define Y_SHAPE 40
-#define Y_TABS 60
-#define Y_ROW0 82                               /* four rows of 18 px */
-#define Y_INFO 156
-#define Y_ROUTE 184                             /* the route: BRAIDS / RINGS > CLOUDS */
-#define Y_STATUS 222
+#define Y_HEAD 0                                /* 64 (platform.c's canvas: 240 x 64 at most): name, band, display */
+#define Y_TABS 64                               /* 18 */
+#define Y_KNOBS 82                              /* 78: four knobs */
+#define Y_INFO 160                              /* 18 */
+#define Y_ROUTE 178                             /* 38 */
+#define Y_STATUS 216                            /* 22, then the CPU bar on 238..239 */
 
 static char *put(char *p, const char *s) { while (*s) *p++ = *s++; return p; }
 static char *put_u(char *p, uint32_t v)
@@ -254,38 +265,149 @@ static char *put_ms(char *p, uint32_t ms)       /* 0 ms .. 999 ms, 1.0 s .. 23.8
     return put(put_u(p, ms / 100u % 10u), " s");
 }
 
-static void draw_title(void)
+/* text on any ground (gfx.c's cv_text blends onto black): the font's 16 levels between bg and fg */
+static int32_t cv_text_on(int32_t x, int32_t y, const felucca_font_t *f, const char *s, uint16_t fg, uint16_t bg)
 {
-    draw_text_box(0, 4, 240, &FONT_L, ui()->name, C_ACC, 1);
-}
-
-static void draw_shape(void)                    /* the line under the engine's name: Braids' shape, Rings' model */
-{
-    char s[32], *p = s;
-    if (set.engine == FOM_E_RINGS) {
-        static const char *const MODEL[3] = {"MODAL RESONATOR", "SYMPATHETIC STRINGS", "STRING"};
-        p = put(p, MODEL[set.p[FOM_P_MODEL]]);
-    } else {
-        p = put_u(p, (uint32_t)set.p[FOM_P_SHAPE] + 1u);
-        p = put(p, "/48  ");
-        p = put(p, FM1_SHAPE_NAME[set.p[FOM_P_SHAPE]]);
+    uint16_t ramp[16];
+    int32_t fr = fg >> 11, fgg = (fg >> 5) & 63, fb = fg & 31, br = bg >> 11, bgg = (bg >> 5) & 63, bb = bg & 31, a;
+    for (a = 0; a < 16; a++)
+        ramp[a] = (uint16_t)(((br + (fr - br) * a / 15) << 11) | ((bgg + (fgg - bgg) * a / 15) << 5) |
+                             (bb + (fb - bb) * a / 15));
+    for (; *s; s++) {
+        uint32_t gi = glyph(f, (uint8_t)*s), gx, gy, w = f->bw[gi], bpr = (w + 1u) / 2u;
+        const uint8_t *gd = f->data + f->off[gi];
+        for (gy = 0; gy < f->h; gy++)
+            for (gx = 0; gx < w; gx++) {
+                uint32_t v = gd[gy * bpr + gx / 2u];
+                v = (gx & 1u) ? (v & 15u) : (v >> 4);
+                if (v) cv_pset(x - f->pad + (int32_t)gx, y + (int32_t)gy, ramp[v]);
+            }
+        x += f->adv[gi];
     }
-    *p = 0;
-    draw_text_box(0, Y_SHAPE, 240, &FONT_S, s, C_WHITE, 1);
+    return x;
+}
+static void cv_text_mid(int32_t cx, int32_t y, const felucca_font_t *f, const char *s, uint16_t fg, uint16_t bg)
+{
+    cv_text_on(cx - text_w(f, s) / 2, y, f, s, fg, bg);
 }
 
-static void draw_tabs(void)                     /* the pages, the one shown in red */
+static void cv_disc(int32_t cx, int32_t cy, int32_t r, uint16_t c)
 {
-    uint32_t i, w = 0;
+    int32_t dy, w = r;
+    for (dy = 0; dy <= r; dy++) {               /* (the half width shrinks row by row: an integer square root) */
+        while (w > 0 && w * w + dy * dy > r * r + r / 2) w--;
+        cv_rect(cx - w, cy - dy, 2 * w + 1, 1, c);
+        if (dy) cv_rect(cx - w, cy + dy, 2 * w + 1, 1, c);
+    }
+}
+static void cv_ring(int32_t cx, int32_t cy, int32_t r, uint16_t c, uint16_t inside)
+{
+    cv_disc(cx, cy, r, c);
+    cv_disc(cx, cy, r - 1, inside);
+}
+static void cv_pill(int32_t x, int32_t y, int32_t w, int32_t h, uint16_t c, uint16_t bg)   /* rounded corners */
+{
+    cv_rect(x, y, w, h, c);
+    cv_pset(x, y, bg); cv_pset(x + w - 1, y, bg); cv_pset(x, y + h - 1, bg); cv_pset(x + w - 1, y + h - 1, bg);
+}
+
+/* the module a page belongs to: the engine's own pages, then Clouds' */
+enum { M_BRAIDS, M_RINGS, M_CLOUDS };
+static uint32_t shown_module(void) { return set.page >= ui()->npages ? M_CLOUDS : set.engine == FOM_E_RINGS ? M_RINGS : M_BRAIDS; }
+
+/* Braids' four-character display, its names from braids/settings.cc (MIT; its own wave glyphs drawn as ASCII) */
+static const char *const BRAIDS_CODE[FM1_NSHAPES] = {
+    "CSAW", "/\\/_", "/|_|", "FOLD", "BUZZ", "SUB_", "SUB/", "SYN_", "SYN/", "//x3", "_-x3", "/\\x3", "SIx3",
+    "RING", "SWRM", "COMB", "TOY*", "ZLPF", "ZPKF", "ZBPF", "ZHPF", "VOSM", "VOWL", "VFOF", "HARM", "FM  ", "FBFM",
+    "WTFM", "PLUK", "BOWD", "BLOW", "FLUT", "BELL", "DRUM", "KICK", "CYMB", "SNAR", "WTBL", "WMAP", "WLIN", "WTx4",
+    "NOIS", "TWNQ", "CLKN", "CLOU", "PRTC", "QPSK", "????",
+};
+
+static uint32_t frozen;                         /* Clouds' FREEZE (REC): not kept over a power-off */
+static uint32_t clouds_shown;                   /* Clouds' share of the CPU, per mille (peak of 0.5 s) */
+
+static void draw_band(int32_t y)                /* the strip under the subtitle: a chain of small diamonds */
+{
     int32_t x;
-    uint32_t n = npages(), gap = n > 3u ? 10u : 24u;      /* (five pages with Clouds: closer together) */
+    cv_rect(0, y, 240, 1, C_BAND);
+    cv_rect(0, y + 6, 240, 1, C_BAND);
+    for (x = 2; x < 240; x += 8) {
+        cv_pset(x + 3, y + 1, C_BAND); cv_pset(x + 2, y + 2, C_BAND); cv_pset(x + 4, y + 2, C_BAND);
+        cv_pset(x + 1, y + 3, C_BAND); cv_pset(x + 5, y + 3, C_BAND); cv_pset(x + 2, y + 4, C_BAND);
+        cv_pset(x + 4, y + 4, C_BAND); cv_pset(x + 3, y + 5, C_BAND);
+    }
+}
+
+/* Rings' two LEDs: the polyphony (one, two, four dots: teal, orange, red) and the model (modal: rings; sympathetic:
+ * strings in a circle; string: one string) */
+static void draw_rings_leds(int32_t y)
+{
+    static const uint16_t COL[3] = {C_TEAL, RGB(240, 150, 20), C_PINK};
+    int32_t i, poly = set.p[FOM_P_POLY], model = set.p[FOM_P_MODEL];
+    for (i = 0; i < 3; i++) {
+        int32_t cx = 22 + 20 * i, on = i == poly;
+        uint16_t c = on ? COL[i] : C_SKIRT;
+        cv_disc(cx, y, 7, c);
+        if (i == 0) cv_disc(cx, y, 2, C_PANEL);
+        if (i == 1) { cv_disc(cx - 3, y, 1, C_PANEL); cv_disc(cx + 3, y, 1, C_PANEL); }
+        if (i == 2) { cv_disc(cx - 2, y - 2, 1, C_PANEL); cv_disc(cx + 2, y - 2, 1, C_PANEL);
+                      cv_disc(cx - 2, y + 2, 1, C_PANEL); cv_disc(cx + 2, y + 2, 1, C_PANEL); }
+    }
+    for (i = 0; i < 3; i++) {
+        int32_t cx = 178 + 20 * i, on = i == model;
+        uint16_t c = on ? COL[i] : C_SKIRT;
+        cv_disc(cx, y, 7, c);
+        if (i == 0) { cv_ring(cx, y, 5, C_PANEL, c); cv_ring(cx, y, 3, C_PANEL, c); }
+        if (i == 1) { cv_rect(cx - 3, y - 4, 1, 9, C_PANEL); cv_rect(cx, y - 4, 1, 9, C_PANEL); cv_rect(cx + 3, y - 4, 1, 9, C_PANEL); }
+        if (i == 2) cv_line(cx - 4, y + 2, cx + 4, y - 2, C_PANEL);
+    }
+}
+
+static void draw_head(void)                     /* the module's top: name, subtitle, band, its display or LEDs */
+{
+    static const char *const NAME[3] = {"Braids", "Rings", "Clouds"};
+    static const char *const SUB[3] = {"macro oscillator", "resonator", "texture synthesizer"};
+    uint32_t m = shown_module();
+    char s[32], *q = s;
+    cv_begin(240, 64, C_PANEL);
+    cv_text_on(8, 3, &FONT_S, NAME[m], C_INK, C_PANEL);
+    cv_text_on(232 - text_w(&FONT_S, SUB[m]), 3, &FONT_S, SUB[m], C_INK, C_PANEL);
+    draw_band(21);
+    if (m == M_BRAIDS) {                        /* the display, red on black, and what the shape is called */
+        uint32_t sh = (uint32_t)set.p[FOM_P_SHAPE];
+        cv_pill(8, 30, 84, 32, RGB(24, 12, 10), C_PANEL);
+        cv_text_mid(50, 30, &FONT_L, BRAIDS_CODE[sh], C_LED, RGB(24, 12, 10));
+        q = put(put_u(q, sh + 1u), "/48");
+        *q = 0;
+        cv_text_on(102, 30, &FONT_S, s, C_INK2, C_PANEL);
+        cv_text_on(102, 46, &FONT_S, FM1_SHAPE_NAME[sh], C_INK, C_PANEL);
+    } else if (m == M_RINGS) {
+        static const char *const MODEL[3] = {"MODAL", "SYMPATHETIC", "STRING"};
+        draw_rings_leds(38);
+        cv_text_mid(120, 31, &FONT_S, MODEL[set.p[FOM_P_MODEL]], C_INK, C_PANEL);
+        cv_text_mid(120, 47, &FONT_S, set.p[FOM_P_POLY] == 2 ? "4 voices" : set.p[FOM_P_POLY] ? "2 voices" : "1 voice",
+                    C_INK2, C_PANEL);
+    } else {                                    /* Clouds: FREEZE (REC), its mode and quality */
+        cv_disc(22, 46, 9, frozen ? C_PINK : C_SKIRT);
+        cv_disc(22, 46, 5, frozen ? RGB(255, 140, 160) : C_PANEL);
+        cv_text_on(36, 38, &FONT_S, "FREEZE", C_INK, C_PANEL);
+        cv_text_on(120, 30, &FONT_S, "granular", C_INK2, C_PANEL);
+        cv_text_on(120, 46, &FONT_S, fom_clouds_lofi() ? "lo-fi, 16 kHz" : "16 bit, 32 kHz", C_INK, C_PANEL);
+    }
+    cv_blit(0, Y_HEAD);
+}
+
+static void draw_tabs(void)                     /* the pages: the one shown dark and underlined */
+{
+    uint32_t i, w = 0, n = npages(), gap = n > 3u ? 10u : 24u;
+    int32_t x;
     for (i = 0; i < n; i++) w += text_w(&FONT_S, page_name(i)) + (i ? gap : 0u);
-    cv_begin(240, 16, C_BLACK);
+    cv_begin(240, 18, C_PANEL);
     x = (240 - (int32_t)w) / 2;
     for (i = 0; i < n; i++) {
         uint32_t on = i == set.page;
-        int32_t x1 = cv_text(x, 0, &FONT_S, page_name(i), on ? C_ACC : C_OFF);
-        if (on) cv_rect(x, 15, x1 - x, 1, C_ACC);
+        int32_t x1 = cv_text_on(x, 0, &FONT_S, page_name(i), on ? C_INK : C_INK2, C_PANEL);
+        if (on) cv_rect(x, 16, x1 - x, 2, C_INK);
         x = x1 + (int32_t)gap;
     }
     cv_blit(0, Y_TABS);
@@ -293,34 +415,64 @@ static void draw_tabs(void)                     /* the pages, the one shown in r
 
 static int32_t param_get(uint32_t p) { return p == A_VOICES ? set.voices : p < FOM_NPARAM ? set.p[p] : 0; }
 
-static void draw_row(uint32_t k)                /* knob k's parameter on this page: its name, its value */
+/* the label's pill, as on the panels: teal or pink for the knobs they mark so, plain lettering for the rest */
+static uint16_t pill_colour(uint32_t p)
+{
+    switch (p) {
+    case FOM_P_TIMBRE: case FOM_P_C_SIZE: case FOM_P_C_TEXTURE: return C_TEAL;
+    case FOM_P_COLOR: case FOM_P_C_POSITION: case FOM_P_C_DENSITY: return C_PINK;
+    default: return C_PANEL;
+    }
+}
+
+/* the pointer at 33 steps from 7 to 5 o'clock: (sin, -cos) * 256 */
+static const int16_t KNOB_DIR[33][2] = {
+    {-181, 181}, {-206, 152}, {-226, 121}, {-241, 86}, {-251, 50}, {-256, 13}, {-255, -25}, {-248, -62},
+    {-237, -98}, {-220, -132}, {-198, -162}, {-172, -190}, {-142, -213}, {-109, -231}, {-74, -245}, {-38, -253},
+    {0, -256}, {38, -253}, {74, -245}, {109, -231}, {142, -213}, {172, -190}, {198, -162}, {220, -132},
+    {237, -98}, {248, -62}, {255, -25}, {256, 13}, {251, 50}, {241, 86}, {226, 121}, {206, 152}, {181, 181},
+};
+
+static void draw_knob(uint32_t k)               /* knob k (KNOB 1..4) on this page: the knob, its label, its value */
 {
     uint32_t p = page_knob(set.page, k);
-    char s[24], *q = s, lab[8];
-    int32_t v = param_get(p);
-    cv_begin(240, 16, C_BLACK);
-    lab[0] = (char)('1' + k); lab[1] = ' '; lab[2] = 0;
-    cv_text(4, 0, &FONT_S, lab, C_TRACK);
+    char s[24], *q = s;
+    const int32_t cx = 30, cy = 21;
+    cv_begin(60, 78, C_PANEL);
     if (p != A_NONE) {
-        cv_text(20, 0, &FONT_S, param_name(p), C_OFF);
+        int32_t v = param_get(p), lo = 0, hi = 1, i, dx, dy;
+        const char *name = param_name(p);
+        uint16_t pc = pill_colour(p);
+        if (p != A_VOICES) { lo = fom_param_info(p)->min; hi = fom_param_info(p)->max; }
+        i = hi > lo ? (v - lo) * 32 / (hi - lo) : 0;
+        cv_disc(cx, cy, 19, C_SKIRT);           /* the skirt, its scale, the cap and the pointer */
+        for (dx = 0; dx <= 32; dx += 8)
+            cv_pset(cx + KNOB_DIR[dx][0] * 18 / 256, cy + KNOB_DIR[dx][1] * 18 / 256, C_INK2);
+        cv_disc(cx, cy, 14, C_KNOB);
+        dx = KNOB_DIR[i][0], dy = KNOB_DIR[i][1];
+        cv_line(cx + dx * 4 / 256, cy + dy * 4 / 256, cx + dx * 13 / 256, cy + dy * 13 / 256, C_WHITE);
+        cv_line(cx + dx * 4 / 256 + 1, cy + dy * 4 / 256, cx + dx * 13 / 256 + 1, cy + dy * 13 / 256, C_WHITE);
+        if (pc != C_PANEL) {
+            int32_t w = text_w(&FONT_S, name) + 8;
+            cv_pill(cx - w / 2, 43, w, 17, pc, C_PANEL);
+            cv_text_mid(cx, 43, &FONT_S, name, C_WHITE, pc);
+        } else {
+            cv_text_mid(cx, 43, &FONT_S, name, C_INK, C_PANEL);
+        }
         if (p == A_VOICES) q = put(q, v == V_MONO ? "MONO" : "POLY 4");
         else switch (fom_param_info(p)->kind) {
-        case FOM_K_BAR:
-            cv_rect(80, 3, 150, 10, C_TRACK);
-            if (v >= 219) cv_rect(80, 3, (int32_t)(((uint32_t)v * 150u) >> 15), 10, C_ACC);
-            break;
         case FOM_K_TIME:
             q = (p == FOM_P_GLIDE && !v) ? put(q, "OFF") : put_ms(q, fom_env_ms((uint32_t)v));
             break;
+        case FOM_K_POLY:
+            q = put(put_u(q, 1u << (uint32_t)v), v ? " VOICES" : " VOICE");
+            break;
         case FOM_K_QUALITY:
-            q = put(q, fom_clouds_lofi() ? (v ? "LO" : "LO (AUTO)") : "HI");
+            q = put(q, fom_clouds_lofi() ? (v ? "LO" : "LO AUTO") : "HI");
             break;
         case FOM_K_SEMI:
             *q++ = v < 0 ? '-' : v > 0 ? '+' : ' ';
             q = put(put_u(q, (uint32_t)(v < 0 ? -v : v)), " st");
-            break;
-        case FOM_K_POLY:
-            q = put(put_u(q, 1u << (uint32_t)v), v ? " VOICES" : " VOICE");
             break;
         case FOM_K_CENTS: {
             int32_t c = v * 100 / 128;
@@ -328,50 +480,16 @@ static void draw_row(uint32_t k)                /* knob k's parameter on this pa
             q = put(put_u(q, (uint32_t)(c < 0 ? -c : c)), " ct");
             break;
         }
-        default:
+        case FOM_K_INDEX:
             q = put_u(q, (uint32_t)v);
+            break;
+        default:                                /* a bar: the knob says it */
+            break;
         }
         *q = 0;
-        if (q != s) cv_text(80, 0, &FONT_S, s, C_WHITE);
+        if (q != s) cv_text_mid(cx, 61, &FONT_S, s, C_INK2, C_PANEL);
     }
-    cv_blit(0, Y_ROW0 + 18 * (int32_t)k);
-}
-
-static uint32_t frozen;                         /* Clouds' FREEZE (REC): not kept over a power-off */
-
-/* the route, as boxes with arrows between them: the engine, and Clouds when it follows (LO: its low fidelity; the box
- * filled while frozen), with Clouds' share of the audio interrupt's time after it (peak of 0.5 s) */
-static uint32_t clouds_shown;
-static void draw_route(void)
-{
-    const char *name[2];
-    char share[8], *q = share;
-    int32_t w[2], x, total = 0;
-    uint32_t i, n = 0;
-    name[n++] = ui()->name;
-    if (set.clouds) name[n++] = fom_clouds_lofi() ? "CLOUDS LO" : "CLOUDS";
-    for (i = 0; i < n; i++) { w[i] = (int32_t)text_w(&FONT_S, name[i]) + 16; total += w[i] + (i ? 20 : 0); }
-    if (set.clouds) { q = put(put_u(q, (clouds_shown + 5u) / 10u), "%"); total += 6 + (int32_t)text_w(&FONT_S, share); }
-    *q = 0;
-    cv_begin(240, 24, C_BLACK);
-    x = (240 - total) / 2;
-    for (i = 0; i < n; i++) {
-        uint32_t fill = i == 1u && frozen;
-        if (i) {                                /* the arrow into this box */
-            cv_rect(x - 18, 11, 14, 2, C_ACC);
-            cv_rect(x - 7, 8, 2, 8, C_ACC);
-            cv_rect(x - 5, 10, 2, 4, C_ACC);
-        }
-        if (fill) cv_rect(x, 0, w[i], 24, C_ACC);
-        else {
-            cv_rect(x, 0, w[i], 1, C_ACC); cv_rect(x, 23, w[i], 1, C_ACC);
-            cv_rect(x, 0, 1, 24, C_ACC); cv_rect(x + w[i] - 1, 0, 1, 24, C_ACC);
-        }
-        cv_text(x + 8, 4, &FONT_S, name[i], fill ? C_BLACK : C_WHITE);
-        x += w[i] + 20;
-    }
-    if (set.clouds) cv_text(x - 14, 4, &FONT_S, share, C_OFF);
-    cv_blit(0, Y_ROUTE);
+    cv_blit(60u * k, Y_KNOBS);
 }
 
 static void draw_info(uint32_t src, uint32_t bpm, uint32_t running)   /* the last note, where it came from, the clock */
@@ -385,7 +503,64 @@ static void draw_info(uint32_t src, uint32_t bpm, uint32_t running)   /* the las
         p = put_u(p, bpm);
     }
     *p = 0;
-    draw_text_box(0, Y_INFO, 240, &FONT_S, s, C_OFF, 1);
+    cv_begin(240, 18, C_PANEL);
+    if (set.clouds) {                           /* (and Clouds' own share of the CPU, right) */
+        char c[16], *q = put(c, "CLOUDS ");
+        q = put(put_u(q, (clouds_shown + 5u) / 10u), "%");
+        *q = 0;
+        cv_text_on(8, 1, &FONT_S, s, C_INK2, C_PANEL);
+        cv_text_on(232 - text_w(&FONT_S, c), 1, &FONT_S, c, C_INK2, C_PANEL);
+    } else cv_text_mid(120, 1, &FONT_S, s, C_INK2, C_PANEL);
+    cv_blit(0, Y_INFO);
+}
+
+/* the route: a small plate per module, a jack on each, patch cables between them and on to the OUT box; Clouds'
+ * share of the CPU on its plate (LO: lo-fi; a red LED while frozen) */
+static void draw_plate(int32_t x, int32_t y, int32_t w, const char *name, uint16_t bg)
+{
+    cv_rect(x, y, w, 30, C_INK2);
+    cv_rect(x + 1, y + 1, w - 2, 28, bg);
+    cv_rect(x + 1, y + 1, w - 2, 2, C_BAND);    /* (a hint of the band) */
+    cv_text_mid(x + w / 2, y + 7, &FONT_S, name, bg == C_DARK ? C_WHITE : C_INK, bg);
+}
+static void draw_jack(int32_t cx, int32_t cy)
+{
+    cv_disc(cx, cy, 4, C_INK2);
+    cv_disc(cx, cy, 2, C_INK);
+}
+static void draw_cable(int32_t x0, int32_t x1, int32_t y, uint16_t c)   /* a sagging cable, jack to jack */
+{
+    int32_t i, px = x0, py = y;
+    for (i = 1; i <= 16; i++) {                 /* a parabola, 7 px down at the middle */
+        int32_t x = x0 + (x1 - x0) * i / 16, t = i * (16 - i);
+        int32_t yy = y + t * 7 / 64;
+        cv_line(px, py, x, yy, c); cv_line(px, py + 1, x, yy + 1, c); cv_line(px, py + 2, x, yy + 2, c);
+        px = x; py = yy;
+    }
+    cv_disc(x0, y + 1, 3, c);
+    cv_disc(x1, y + 1, 3, c);
+}
+static void draw_route(void)
+{
+    int32_t y = 3, x = 6, w = 76, cx;
+    cv_begin(240, 38, C_PANEL);
+    cv_rect(0, 0, 240, 1, C_BAND);
+    draw_plate(x, y, w, set.engine == FOM_E_RINGS ? "Rings" : "Braids", C_PANEL);
+    draw_jack(x + w - 8, y + 23);
+    cx = x + w - 8;
+    if (set.clouds) {
+        int32_t xc = 102;
+        draw_plate(xc, y, w, fom_clouds_lofi() ? "Clouds lo" : "Clouds", C_PANEL);
+        draw_jack(xc + 8, y + 23);
+        draw_jack(xc + w - 8, y + 23);
+        if (frozen) cv_disc(xc + w - 10, y + 8, 3, C_PINK);
+        draw_cable(cx, xc + 8, y + 22, C_PINK);
+        cx = xc + w - 8;
+    }
+    draw_plate(198, y, 36, "OUT", C_DARK);
+    draw_jack(216, y + 23);
+    draw_cable(cx, 216, y + 22, C_TEAL);
+    cv_blit(0, Y_ROUTE);
 }
 
 static void draw_status(int32_t oct, uint32_t ch, uint32_t cpu)   /* cpu: per mille */
@@ -399,12 +574,14 @@ static void draw_status(int32_t oct, uint32_t ch, uint32_t cpu)   /* cpu: per mi
     p = put(p, "  CPU ");
     p = put(put_u(p, (cpu + 5u) / 10u), "%");
     *p = 0;
-    draw_text_box(0, Y_STATUS, 240, &FONT_S, s, cpu >= 800u ? C_ACC : C_OFF, 1);
+    cv_begin(240, 22, C_DARK);
+    cv_text_mid(120, 3, &FONT_S, s, cpu >= 800u ? RGB(255, 170, 170) : C_WHITE, C_DARK);
+    cv_blit(0, Y_STATUS);
     {   /* and as a bar on the bottom two rows, 2.4 px a percent: a glance, and tests/emu_smoke.mjs reads it */
         uint32_t w = cpu * 240u / 1000u;
         if (w > 240u) w = 240u;
         lcd_fill(0, 238, 240, 2, C_BLACK);
-        if (w) lcd_fill(0, 238, w, 2, cpu >= 800u ? C_ACC : C_TRACK);
+        if (w) lcd_fill(0, 238, w, 2, cpu >= 800u ? C_PINK : C_INK2);
     }
 }
 
@@ -482,7 +659,7 @@ static void knob_turn(uint32_t p, int32_t e)
 static void app_main(void)
 {
     uint32_t prev = 0, k, t_change = 0, dirty = 0, status_drawn = ~0u, info_drawn = ~0u;
-    uint32_t title_drawn = ~0u, shape_drawn = ~0u, tabs_drawn = ~0u, route_drawn = ~0u, row_drawn[4], cpu_shown = 0;
+    uint32_t head_drawn = ~0u, tabs_drawn = ~0u, route_drawn = ~0u, row_drawn[4], cpu_shown = 0;
     uint32_t t_cpu = 0;
     uint8_t held[27] = {0};                     /* the note each key plays */
 #if BOARD_SMK37
@@ -593,13 +770,15 @@ static void app_main(void)
 #endif
 
         idle_ok = 1;                            /* the drawing below may read MIDI meanwhile (LCD_IDLE) */
-        if (set.engine != title_drawn) { title_drawn = set.engine; draw_title(); tabs_drawn = ~0u; }
-        if ((st = set.engine | set.clouds << 4 | frozen << 5 | (uint32_t)fom_clouds_lofi() << 6 |
-                  ((clouds_shown + 5u) / 10u) << 8) != route_drawn) { route_drawn = st; draw_route(); }
-        if ((st = (uint32_t)set.p[FOM_P_SHAPE] | set.engine << 8 | (uint32_t)set.p[FOM_P_MODEL] << 12) != shape_drawn) {
-            shape_drawn = st;
-            draw_shape();
+        if ((st = shown_module() | (uint32_t)set.p[FOM_P_SHAPE] << 2 | (uint32_t)set.p[FOM_P_MODEL] << 8 |
+                  (uint32_t)set.p[FOM_P_POLY] << 10 | frozen << 12 | (uint32_t)fom_clouds_lofi() << 13) != head_drawn) {
+            head_drawn = st;
+            draw_head();
             for (k = 0; k < 4u; k++) row_drawn[k] = ~0u;   /* TIMBRE's and COLOR's names follow the shape */
+        }
+        if ((st = set.engine | set.clouds << 4 | frozen << 5 | (uint32_t)fom_clouds_lofi() << 6) != route_drawn) {
+            route_drawn = st;
+            draw_route();
         }
         if ((st = set.page | set.engine << 4 | set.clouds << 8) != tabs_drawn) {
             tabs_drawn = st;
@@ -609,9 +788,10 @@ static void app_main(void)
         for (k = 0; k < 4u; k++)
             if ((st = (uint32_t)(param_get(page_knob(set.page, k)) & 0xFFFF)) != row_drawn[k]) {
                 row_drawn[k] = st;
-                draw_row(k);
+                draw_knob(k);
             }
-        if ((st = last_note | midi_src << 8 | clk_bpm << 10 | clk_run << 20) != info_drawn) {
+        if ((st = last_note | midi_src << 8 | clk_bpm << 10 | clk_run << 20 | set.clouds << 21 |
+                  ((clouds_shown + 5u) / 10u) << 22) != info_drawn) {
             info_drawn = st;
             draw_info(midi_src, clk_bpm, clk_run);
         }
