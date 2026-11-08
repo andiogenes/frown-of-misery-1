@@ -201,10 +201,7 @@ static int quiet(void)                          /* nothing sounds, not even a re
 #define Y_TABS 60
 #define Y_ROW0 82                               /* four rows of 18 px */
 #define Y_INFO 156
-#define Y_KEYS 176
-#define H_KEYS 40
 #define Y_STATUS 222
-static int black(uint32_t note) { return (0x54Au >> (note % 12u)) & 1u; }
 
 static char *put(char *p, const char *s) { while (*s) *p++ = *s++; return p; }
 static char *put_u(char *p, uint32_t v)
@@ -320,23 +317,6 @@ static void draw_info(uint32_t src, uint32_t bpm, uint32_t running)   /* the las
     draw_text_box(0, Y_INFO, 240, &FONT_S, s, C_OFF, 1);
 }
 
-static void draw_keys(uint32_t lit)             /* bit k: key k sounds */
-{
-    uint32_t k, w = 0;
-    cv_begin(240, H_KEYS, C_BLACK);
-    for (k = 0; k < 27u; k++)                   /* 16 white keys of 14 px from x = 8 */
-        if (!black(KEY0 + k)) {
-            cv_rect(8 + (int32_t)w * 14, 0, 13, H_KEYS, lit >> k & 1u ? C_ACC : C_KEY);
-            w++;
-        }
-    for (k = 0, w = 0; k < 27u; k++)            /* the black ones on the line between two white */
-        if (black(KEY0 + k))
-            cv_rect(8 + (int32_t)w * 14 - 5, 0, 9, H_KEYS * 6 / 10, lit >> k & 1u ? C_ACC : C_BLACK);
-        else
-            w++;
-    cv_blit(0, Y_KEYS);
-}
-
 static void draw_status(int32_t oct, uint32_t ch, uint32_t cpu)   /* cpu: per mille */
 {
     char s[40], *p = s;
@@ -425,7 +405,7 @@ static void knob_turn(uint32_t p, int32_t e)
 
 static void app_main(void)
 {
-    uint32_t prev = 0, k, t_change = 0, dirty = 0, lit_drawn = ~0u, status_drawn = ~0u, info_drawn = ~0u;
+    uint32_t prev = 0, k, t_change = 0, dirty = 0, status_drawn = ~0u, info_drawn = ~0u;
     uint32_t title_drawn = ~0u, shape_drawn = ~0u, tabs_drawn = ~0u, row_drawn[4], cpu_shown = 0, t_cpu = 0;
     uint8_t held[27] = {0};                     /* the note each key plays */
 #if BOARD_SMK37
@@ -549,7 +529,6 @@ static void app_main(void)
             info_drawn = st;
             draw_info(midi_src, clk_bpm, clk_run);
         }
-        if (lit != lit_drawn) { lit_drawn = lit; draw_keys(lit); }   /* redraw only what changed */
         if ((st = (uint32_t)(oct + 2) | (uint32_t)set.ch << 4 | (cpu_shown + 5u) / 10u << 9) != status_drawn) {
             status_drawn = st;
             draw_status(oct, set.ch, cpu_shown);
