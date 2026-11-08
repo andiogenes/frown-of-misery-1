@@ -59,17 +59,18 @@ enum {                         /* parameters (all engines; each engine reads the
     FOM_P_C_FEEDBACK,
     FOM_P_C_REVERB,
     FOM_P_C_PITCH,             /* Clouds' PITCH, -24..24 semitones */
+    FOM_P_C_QUALITY,           /* Clouds' quality: 0 HI (16 bits, 32 kHz), 1 LO (Clouds' low fidelity: 8 bits, 16 kHz) */
     FOM_NPARAM
 };
 #define FOM_ENV_MAX 20u
 
 /* How a parameter is shown and stored. */
-enum { FOM_K_BAR, FOM_K_TIME, FOM_K_CENTS, FOM_K_INDEX, FOM_K_POLY, FOM_K_SEMI };
+enum { FOM_K_BAR, FOM_K_TIME, FOM_K_CENTS, FOM_K_INDEX, FOM_K_POLY, FOM_K_SEMI, FOM_K_QUALITY };
 typedef struct {
     const char *name;          /* <= 6 characters */
     int16_t min, max, def;
     uint8_t kind;              /* FOM_K_*: a bar, a time (fom_env_ms), cents (value * 100 / 128), a plain index,
-                                  polyphony (1 << value), semitones */
+                                  polyphony (1 << value), semitones, HI / LO */
 } fom_param_info_t;
 const fom_param_info_t *fom_param_info(uint32_t p);
 
@@ -81,6 +82,11 @@ void fom_set_freeze(int on);
 /* The audio interrupt's last load, per mille of its time (the app measures it): over 85 %, Clouds plays fewer grains
  * at once until it calms down. Called from the interrupt, after fom_render_add. */
 void fom_set_load(uint32_t permille);
+/* Clouds runs LO whatever FOM_P_C_QUALITY says after Rings' sympathetic strings (HI does not fit there) */
+int fom_clouds_lofi(void);                 /* LO now, asked for or not */
+/* The timer the engine reads to tell Clouds' share of the interrupt's time (fom_clouds_ticks: in the last call) */
+void fom_set_ticks(uint32_t (*ticks)(void));
+uint32_t fom_clouds_ticks(void);
 void fom_set_param(uint32_t p, int32_t v);  /* clamped to the parameter's range */
 uint32_t fom_env_ms(uint32_t index);        /* how long an envelope or glide index is, in ms */
 /* The pitch wheel, in 1/128 semitone (Braids' pitch unit): +-256 is +-2 semitones. */

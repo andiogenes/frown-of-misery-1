@@ -44,6 +44,7 @@ const fom_param_info_t kParams[FOM_NPARAM] = {
     /* FOM_P_C_FEEDBACK */ {"FDBK", 0, 32767, 0, FOM_K_BAR},
     /* FOM_P_C_REVERB   */ {"REVERB", 0, 32767, 9830, FOM_K_BAR},
     /* FOM_P_C_PITCH    */ {"PITCH", -24, 24, 0, FOM_K_SEMI},
+    /* FOM_P_C_QUALITY  */ {"QUALTY", 0, 1, 0, FOM_K_QUALITY},
 };
 
 /* Glide: a one-pole slew of the pitch, updated every kSub frames. kGlideK[i] = 65536 (1 - e^(-kSub / 2^i)),
@@ -83,6 +84,8 @@ uint32_t g_clouds_quiet = 0xFFFFFFFFu;          /* frames since Clouds' output l
 volatile uint32_t g_load;                        /* the last block's load, per mille of the interrupt's budget */
 int32_t g_guard;                                 /* grains taken off by the guard */
 uint32_t g_guard_calm;                           /* blocks since the load was last high */
+uint32_t (*g_ticks)(void);                       /* the app's timer, for Clouds' share */
+volatile uint32_t g_clouds_ticks;
 
 /* Rings' strikes, from the main loop to the ISR: a ring, one writer each side (w by the main loop, r by the ISR) */
 volatile uint32_t g_strike_w, g_strike_r;
@@ -123,6 +126,7 @@ void fom_init(void)
     g_clouds.Init(g_clouds_buf, g_clouds_diffuser, g_clouds_reverb);
     g_clouds_on = g_freeze = 0;
     g_load = 0; g_guard = 0; g_guard_calm = 0;
+    g_clouds_ticks = 0;
     g_clouds_quiet = 0xFFFFFFFFu;
 }
 
@@ -130,6 +134,12 @@ void fom_set_engine(uint32_t e) { g_engine = e < FOM_NENGINES ? e : 0u; }
 void fom_set_clouds(int on) { g_clouds_on = on ? 1u : 0u; }
 void fom_set_freeze(int on) { g_freeze = on ? 1u : 0u; }
 void fom_set_load(uint32_t permille) { g_load = permille; }
+void fom_set_ticks(uint32_t (*ticks)(void)) { g_ticks = ticks; }
+uint32_t fom_clouds_ticks(void) { return g_clouds_ticks; }
+int fom_clouds_lofi(void)
+{
+    return g_p[FOM_P_C_QUALITY] || (g_engine == FOM_E_RINGS && g_p[FOM_P_MODEL] == 1);
+}
 
 void fom_strike(uint32_t note, uint32_t velocity)
 {
@@ -224,9 +234,10 @@ void fom_render_add(int32_t *out, uint32_t n)
 {
     uint32_t i;
     if (n > FOM_BLOCK_MAX) n = FOM_BLOCK_MAX;
-    if (!g_clouds_on) { render_engine(out, n); return; }
+    if (!g_clouds_on) { render_engine(out, n); g_clouds_ticks = 0; return; }
     for (i = 0; i < 2u * n; i++) g_dry[i] = 0;
     render_engine(g_dry, n);
+    uint32_t t0 = g_ticks ? g_ticks() : 0;
     fom::CloudsPatch cp;
     cp.position = q16(g_p[FOM_P_C_POSITION]); cp.size = q16(g_p[FOM_P_C_SIZE]);
     cp.density = q16(g_p[FOM_P_C_DENSITY]); cp.texture = q16(g_p[FOM_P_C_TEXTURE]);
@@ -234,7 +245,10 @@ void fom_render_add(int32_t *out, uint32_t n)
     cp.feedback = q16(g_p[FOM_P_C_FEEDBACK]); cp.reverb = q16(g_p[FOM_P_C_REVERB]);
     cp.pitch = g_p[FOM_P_C_PITCH] << 16;
     cp.freeze = g_freeze != 0;
-    int32_t cap = g_engine != FOM_E_RINGS ? 32 : g_p[FOM_P_MODEL] == 1 ? 8 : 16;
+    int lofi = fom_clouds_lofi();
+    g_clouds.set_lofi(lofi != 0);
+    /* the most grains: Clouds' own after Braids (32, LO 46); after Rings 16 (LO 24), its sympathetic strings 8 (LO 12) */
+    int32_t cap = g_engine != FOM_E_RINGS ? (lofi ? 46 : 32) : g_p[FOM_P_MODEL] == 1 ? (lofi ? 12 : 8) : (lofi ? 24 : 16);
     if (g_load > 850u) { g_guard += 4; g_guard_calm = 0; }  /* over 85 %: four grains fewer at once */
     else if (g_guard && g_load < 700u && ++g_guard_calm >= 64u) { g_guard--; g_guard_calm = 0; }   /* back slowly */
     if (g_guard > cap - 4) g_guard = cap - 4;
@@ -248,6 +262,7 @@ void fom_render_add(int32_t *out, uint32_t n)
         if (s > peak) peak = s;
     }
     g_clouds_quiet = peak > 8 ? 0u : g_clouds_quiet < 0x80000000u ? g_clouds_quiet + n : g_clouds_quiet;
+    g_clouds_ticks = g_ticks ? g_ticks() - t0 : 0;
 }
 
 static void render_engine(int32_t *out, uint32_t n)

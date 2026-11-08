@@ -4,6 +4,7 @@
 //
 //   port_clouds IN.wav OUT.wav [key=value ...]   (ref_clouds' keys and defaults; mode=0 and quality=0 only, ported)
 //   port_clouds IN.wav OUT.wav fx=1 ...          the firmware's path instead: CloudsFx at 44.1 kHz, out at 44.1 kHz
+//                                     [quality=2]  Clouds' low fidelity (LO), on that path only
 #include <cstdio>
 #include <cstdlib>
 #include <string>
@@ -32,14 +33,19 @@ int main(int argc, char** argv)
     float position = 0.5f, size = 0.5f, density = 0.6f, texture = 0.5f, pitch = 0.0f;
     float blend = 1.0f, spread = 0.5f, feedback = 0.0f, rev = 0.3f, freeze_at = -1.0f, seconds = -1.0f;
     int use_fx = 0;
+    bool lofi = false;
     for (int i = 3; i < argc; ++i) {
         std::string a = argv[i];
         size_t eq = a.find('=');
         if (eq == std::string::npos) { std::fprintf(stderr, "not key=value: %s\n", argv[i]); return 2; }
         std::string k = a.substr(0, eq);
         float v = std::strtof(a.c_str() + eq + 1, nullptr);
-        if (k == "mode" || k == "quality") {
-            if (v != 0.0f) { std::fprintf(stderr, "ported: mode=0 (granular), quality=0 (stereo, 16 bits)\n"); return 2; }
+        if (k == "mode") {
+            if (v != 0.0f) { std::fprintf(stderr, "ported: mode=0 (granular)\n"); return 2; }
+        }
+        else if (k == "quality") {
+            if (v != 0.0f && v != 2.0f) { std::fprintf(stderr, "ported: quality=0 (stereo, 16 bits), 2 (stereo, low fidelity: fx=1 only)\n"); return 2; }
+            lofi = v == 2.0f;
         }
         else if (k == "position") position = v;
         else if (k == "size") size = v;
@@ -70,6 +76,8 @@ int main(int argc, char** argv)
     p.freeze = false;
     clouds.Init(buffer, diffuser, reverb);
     fx.Init(buffer, diffuser, reverb);
+    if (lofi && !use_fx) { std::fprintf(stderr, "quality=2 needs fx=1\n"); return 2; }
+    fx.set_lofi(lofi);
 
     const int block = 32;
     std::vector<int16_t> out;

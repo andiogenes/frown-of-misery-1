@@ -24,7 +24,9 @@
 namespace fom {
 
 const int32_t kCloudsBlock = 32;                   /* Clouds' block, at 32 kHz */
-const int32_t kCloudsMaxGrains = 32;               /* stereo at 16 bits: Clouds' count */
+const int32_t kCloudsMaxGrainsHi = 32;             /* stereo at 16 bits: Clouds' count */
+const int32_t kCloudsMaxGrainsLo = 46;             /* stereo at low fidelity: Clouds' 32 * 23 / 16 */
+const int32_t kCloudsMaxGrains = kCloudsMaxGrainsLo;
 const int32_t kCloudsBufferSamples = 32704;        /* a channel's buffer (Clouds' 65408 bytes), with the 8 of tail */
 const int32_t kCloudsDiffuserSize = 2048;          /* Clouds' FxEngine sizes */
 const int32_t kCloudsReverbSize = 16384;
@@ -46,7 +48,7 @@ class CloudsGrain {
     void Start(int32_t pre_delay, int32_t buffer_size, int32_t start, int32_t width, int32_t phase_increment,
                uint32_t window_shape_q30, int32_t gain_l_q30, int32_t gain_r_q30, bool high);
     /* adds its part of a block (Q48, L R) */
-    void OverlapAdd(const int16_t* buf, int32_t buffer_size, int64_t* acc, int32_t n);
+    void OverlapAdd(const void* buf, bool ulaw, int32_t buffer_size, int64_t* acc, int32_t n);
 
  private:
     int32_t first_sample_, phase_, phase_increment_, pre_delay_;
@@ -72,8 +74,16 @@ class Clouds {
     /* The most grains at once: Clouds' 32 (the default), fewer where the CPU is short (4..32). The density scales
      * with it, as Clouds' own count changes with its quality setting. */
     void set_max_grains(int32_t n);
+    /* Clouds' low fidelity (LO): 8-bit mu-law buffers (4 s) and the grains at 16 kHz, as on the module; here the
+     * diffuser and the reverb run at 16 kHz too (their lines halved: the same times), so all of it costs about half.
+     * Blocks are then 16 samples at 16 kHz. Changing it starts from silence, as Clouds resets its buffers. */
+    void set_lofi(bool lofi);
+    bool lofi() const { return lofi_; }
 
  private:
+    void Reset();
+    int32_t max_grains_for_quality() const;
+    int32_t buffer_size() const { return lofi_ ? 2 * kCloudsBufferSamples - 8 : kCloudsBufferSamples - 8; }
     void Run(const CloudsPatch& patch, const int32_t* in, int32_t n);   /* out_[]: Clouds' out_ after the reverb */
     void WriteBuffer(const int32_t* in, int32_t n, bool write);
     void Play(const CloudsPatch& patch, int32_t n);
@@ -90,9 +100,17 @@ class Clouds {
     /* the grains (GranularSamplePlayer) */
     CloudsGrain grains_[kCloudsMaxGrains];
     int32_t max_grains_;
+    bool lofi_;
     CloudsFloat num_grains_;                       /* the smoothed count */
     int32_t gain_normalization_;                   /* Q29 */
     CloudsFloat hint_;                             /* the grain size hint, a float32 as Clouds keeps it */
+    struct {                                       /* Play's float32 arithmetic, kept while its inputs hold */
+        uint32_t density, texture;
+        int32_t max;
+        CloudsFloat hint, ov, ws, target, xfade;
+        uint64_t prob_ceil, space_ceil;
+        uint32_t window_shape;
+    } pc_;
     int32_t grain_rate_phasor_;
     uint32_t rng_;
     /* the processor */
@@ -120,6 +138,7 @@ class CloudsFx {
     /* n stereo frames, Q15 (L R) in io[], replaced by Clouds' output at patch */
     void Process(const CloudsPatch& patch, int32_t* io, size_t n);
     void set_max_grains(int32_t n) { clouds_.set_max_grains(n); }
+    void set_lofi(bool lofi);                      /* (see Clouds::set_lofi) */
 
  private:
     Clouds clouds_;
@@ -133,6 +152,7 @@ class CloudsFx {
     int32_t fifo_[128 * 2];                        /* the wet signal at 44.1 kHz, Q15 */
     uint32_t fifo_read_, fifo_write_;
     int32_t fade_out_;                             /* Q30, the dry side of the crossfade, smoothed */
+    bool lofi_;
 };
 
 }  // namespace fom

@@ -56,6 +56,11 @@ const int32_t kDiffuserLength[8] = { 126, 180, 269, 444, 151, 205, 245, 405 };
 const int32_t kReverbLength[10] = { 113, 162, 241, 399, 1653, 2038, 3411, 1913, 1663, 4782 };
 
 const int32_t kDiffuserBase[8] = { 0, 127, 308, 578, 1023, 1175, 1381, 1627 };          /* (ends at 2032) */
+/* LO (16 kHz): the same lines at half the length, so the same times */
+const int32_t kDiffuserLengthLo[8] = { 63, 90, 135, 222, 76, 103, 123, 203 };
+const int32_t kDiffuserBaseLo[8] = { 0, 64, 155, 291, 514, 591, 695, 819 };
+const int32_t kReverbLengthLo[10] = { 57, 81, 121, 200, 827, 1019, 1706, 957, 832, 2391 };
+const int32_t kReverbBaseLo[10] = { 0, 58, 140, 262, 463, 1291, 2311, 4018, 4976, 5809 };
 const int32_t kReverbBase[10] = { 0, 114, 277, 519, 919, 2573, 4612, 8024, 9938, 11602 };   /* (ends at 16384) */
 
 /* the reverb's 12-bit format: value * 4096 in 16 bits */
@@ -65,6 +70,21 @@ inline uint16_t comp12(int32_t acc)                  /* (int32_t)(x * 4096) towa
     int32_t v = (acc + ((acc >> 31) & 4095)) >> 12;
     return (uint16_t)(int16_t)(v < -32768 ? -32768 : v > 32767 ? 32767 : v);
 }
+/* Lin2MuLaw (clouds/dsp/mu_law.h), LO's 8-bit buffers */
+inline uint8_t lin2mulaw(int32_t pcm)
+{
+    int32_t mask, seg;
+    pcm >>= 2;
+    if (pcm < 0) { pcm = -pcm; mask = 0x7f; } else mask = 0xff;
+    if (pcm > 8159) pcm = 8159;
+    pcm += 0x84 >> 2;
+    if (pcm <= 0x3f) seg = 0; else if (pcm <= 0x7f) seg = 1; else if (pcm <= 0xff) seg = 2;
+    else if (pcm <= 0x1ff) seg = 3; else if (pcm <= 0x3ff) seg = 4; else if (pcm <= 0x7ff) seg = 5;
+    else if (pcm <= 0xfff) seg = 6; else if (pcm <= 0x1fff) seg = 7; else seg = 8;
+    if (seg >= 8) return (uint8_t)(0x7f ^ mask);
+    return (uint8_t)(((seg << 4) | ((pcm >> (seg + 1)) & 0x0f)) ^ mask);
+}
+
 /* a times b Q30, truncated (the reverb's and the diffuser's many products: 2^-24 under their 12-bit memory) */
 inline int32_t mt30(int32_t a, int32_t b) { return (int32_t)(((int64_t)a * (int64_t)b) >> 30); }
 
@@ -266,8 +286,13 @@ inline int32_t envelope_at(uint32_t ph, int32_t shape)    /* Grain::RenderEnvelo
     return gain;
 }
 
-template <int kRead, int kEnv, bool kLeft>
-static void grain_render(const int16_t* buf, int32_t size, int64_t* acc, int32_t m, uint32_t ph,
+/* a sample of the recording: 16-bit, or (LO) 8-bit mu-law through lut_ulaw */
+template <bool kUlaw> inline int32_t smp(const void* b, int32_t i);
+template <> inline int32_t smp<false>(const void* b, int32_t i) { return ((const int16_t*)b)[i]; }
+template <> inline int32_t smp<true>(const void* b, int32_t i) { return kCloudsUlaw[((const uint8_t*)b)[i]]; }
+
+template <int kRead, int kEnv, bool kLeft, bool kU>
+static void grain_render(const void* buf, int32_t size, int64_t* acc, int32_t m, uint32_t ph,
                          uint32_t env_inc, int32_t shape, int32_t pan_gain, int32_t pan_cross, int32_t phase,
                          int32_t phase_inc, int32_t first)
 {
@@ -282,27 +307,31 @@ static void grain_render(const int16_t* buf, int32_t size, int64_t* acc, int32_t
             int32_t index = first + (phase >> 16);
             if (index >= size) index -= size;
             int32_t t = phase & 0xFFFF, l, r;
-            const int16_t* s = buf + 2 * index;             /* (L R interleaved) */
+            const int32_t j = 2 * index;                    /* (L R interleaved) */
+#define S(o) smp<kU>(buf, j + (o))
             if (kRead == kReadExact) {
-                l = s[2] << 3;
-                r = s[3] << 3;
+                l = S(2) << 3;
+                r = S(3) << 3;
             } else if (kRead == kReadExactLinear) {
-                l = s[0] << 3;
-                r = s[1] << 3;
+                l = S(0) << 3;
+                r = S(1) << 3;
             } else if (kRead == kReadHermite) {             /* AudioBuffer::ReadHermite (Laurent de Soras's) */
-                int32_t c = s[4] - s[0], v = 2 * (s[2] - s[4]), w = c + v, a = w + v + (s[6] - s[2]), bn = w + a;
+                int32_t s0 = S(0), s1 = S(2), s2 = S(4), s3 = S(6);
+                int32_t c = s2 - s0, v = 2 * (s1 - s2), w = c + v, a = w + v + (s3 - s1), bn = w + a;
                 int32_t y = (int32_t)(((int64_t)(a << 2) * t) >> 16) - (bn << 2);
                 y = (int32_t)(((int64_t)y * t) >> 16) + (c << 2);
-                l = (int32_t)(((int64_t)y * t) >> 16) + (s[2] << 3);
-                c = s[5] - s[1]; v = 2 * (s[3] - s[5]); w = c + v; a = w + v + (s[7] - s[3]); bn = w + a;
+                l = (int32_t)(((int64_t)y * t) >> 16) + (s1 << 3);
+                s0 = S(1); s1 = S(3); s2 = S(5); s3 = S(7);
+                c = s2 - s0; v = 2 * (s1 - s2); w = c + v; a = w + v + (s3 - s1); bn = w + a;
                 y = (int32_t)(((int64_t)(a << 2) * t) >> 16) - (bn << 2);
                 y = (int32_t)(((int64_t)y * t) >> 16) + (c << 2);
-                r = (int32_t)(((int64_t)y * t) >> 16) + (s[3] << 3);
+                r = (int32_t)(((int64_t)y * t) >> 16) + (s1 << 3);
             } else {
-                int32_t th = t >> 1;
-                l = (s[0] << 3) + (((s[2] - s[0]) * th) >> 12);
-                r = (s[1] << 3) + (((s[3] - s[1]) * th) >> 12);
+                int32_t th = t >> 1, a0 = S(0), a1 = S(2), b0 = S(1), b1 = S(3);
+                l = (a0 << 3) + (((a1 - a0) * th) >> 12);
+                r = (b0 << 3) + (((b1 - b0) * th) >> 12);
             }
+#undef S
             if (kLeft) {                                    /* L = l + r (1 - gain_r), R = r gain_r */
                 acc[0] += (int64_t)l * g1 + (int64_t)r * g2;
                 acc[1] += (int64_t)r * g3;
@@ -318,7 +347,7 @@ static void grain_render(const int16_t* buf, int32_t size, int64_t* acc, int32_t
     }
 }
 
-void CloudsGrain::OverlapAdd(const int16_t* buf, int32_t buffer_size, int64_t* acc, int32_t n)
+void CloudsGrain::OverlapAdd(const void* buf, bool ulaw, int32_t buffer_size, int64_t* acc, int32_t n)
 {
     if (!active_) return;
     int32_t k = 0;
@@ -334,10 +363,11 @@ void CloudsGrain::OverlapAdd(const int16_t* buf, int32_t buffer_size, int64_t* a
     int32_t shape = env == kEnvSlope ? (int32_t)slope_ : smoothness_;
     bool exact = !((phase_ | phase_increment_) & 0xFFFF);
     int32_t read = high_ ? (exact ? kReadExact : kReadHermite) : (exact ? kReadExactLinear : kReadLinear);
-#define FOM_R(rd, e) (left ? grain_render<rd, e, true>(buf, buffer_size, acc, m, env_phase_, env_increment_, shape, \
-                                                    pg, pc, phase_, phase_increment_, first_sample_) \
-                           : grain_render<rd, e, false>(buf, buffer_size, acc, m, env_phase_, env_increment_, shape, \
-                                                     pg, pc, phase_, phase_increment_, first_sample_))
+#define FOM_RU(rd, e, u) (left ? grain_render<rd, e, true, u>(buf, buffer_size, acc, m, env_phase_, env_increment_, \
+                                                         shape, pg, pc, phase_, phase_increment_, first_sample_) \
+                               : grain_render<rd, e, false, u>(buf, buffer_size, acc, m, env_phase_, env_increment_, \
+                                                          shape, pg, pc, phase_, phase_increment_, first_sample_))
+#define FOM_R(rd, e) (ulaw ? FOM_RU(rd, e, true) : FOM_RU(rd, e, false))
     if (read == kReadExact) { if (env == kEnvWindow) FOM_R(kReadExact, kEnvWindow); else FOM_R(kReadExact, kEnvSlope); }
     else if (read == kReadHermite) {
         if (env == kEnvWindow) FOM_R(kReadHermite, kEnvWindow); else FOM_R(kReadHermite, kEnvSlope);
@@ -346,6 +376,7 @@ void CloudsGrain::OverlapAdd(const int16_t* buf, int32_t buffer_size, int64_t* a
     } else {
         if (env == kEnvTriangle) FOM_R(kReadLinear, kEnvTriangle); else FOM_R(kReadLinear, kEnvSlope);
     }
+#undef FOM_RU
 #undef FOM_R
     remaining_ -= (uint32_t)m;
     env_phase_ += (uint32_t)m * env_increment_;
@@ -365,36 +396,61 @@ void Clouds::Init(int16_t* buffer, int32_t* diffuser, uint16_t* reverb)
     buf_ = buffer;
     diffuser_ = diffuser;
     reverb_ = reverb;
-    for (int32_t i = 0; i < 2 * kCloudsBufferSamples; ++i) buf_[i] = 0;
+    freeze_lp_ = dry_wet_ = 0;
+    fb_feedback_ = 0xFFFFFFFFu;
+    fb_g_ = fb_h_ = 0;
+    for (int32_t c = 0; c < 2; ++c) fb_s1_[c] = fb_s2_[c] = 0;
+    for (int32_t i = 0; i < kCloudsBlock * 2; ++i) fb_[i] = in_[i] = out_[i] = 0;
+    rng_ = 0x21;                                            /* stmlib's Random */
+    max_grains_ = kCloudsMaxGrainsHi;
+    lofi_ = false;
+    Reset();
+}
+
+/* GranularProcessor::Prepare when its buffers are reset (a new quality): the recording, the grains, the diffuser and
+ * the reverb start from silence */
+void Clouds::Reset()
+{
+    if (lofi_) {                                            /* (mu-law's silence: Clouds fills with 127) */
+        uint8_t* b8 = (uint8_t*)buf_;
+        for (int32_t i = 0; i < 4 * kCloudsBufferSamples; ++i) b8[i] = 127;
+    } else {
+        for (int32_t i = 0; i < 2 * kCloudsBufferSamples; ++i) buf_[i] = 0;
+    }
     for (int32_t i = 0; i < kCloudsDiffuserSize; ++i) diffuser_[i] = 0;
     for (int32_t i = 0; i < kCloudsReverbSize; ++i) reverb_[i] = 0;
     for (int32_t i = 0; i < 256; ++i) tail_[0][i] = tail_[1][i] = 0;
     write_head_ = crossfade_counter_ = 0;
     for (int32_t i = 0; i < kCloudsMaxGrains; ++i) grains_[i].Init();
-    max_grains_ = kCloudsMaxGrains;
     num_grains_.m = 0; num_grains_.e = 0;
     gain_normalization_ = 1 << 29;
     hint_.m = 1 << 23; hint_.e = -13;                       /* 1024.0f */
+    pc_.density = 0xFFFFFFFFu; pc_.max = -1;
     grain_rate_phasor_ = 0;
-    rng_ = 0x21;                                            /* stmlib's Random */
-    freeze_lp_ = dry_wet_ = 0;
-    fb_feedback_ = 0xFFFFFFFFu;
-    fb_g_ = fb_h_ = 0;
-    for (int32_t c = 0; c < 2; ++c) fb_s1_[c] = fb_s2_[c] = lp_decay_[c] = 0;
-    for (int32_t i = 0; i < kCloudsBlock * 2; ++i) fb_[i] = in_[i] = out_[i] = 0;
+    lp_decay_[0] = lp_decay_[1] = 0;
     diffuser_wp_ = reverb_wp_ = 0;
     diffuser_rest_ = reverb_rest_ = false;
     for (int32_t i = 0; i < 2; ++i) {                       /* CosineOscillator::Start: y1 = c / 4, y0 = 1 / 2 */
-        lfo_y1_[i] = (int64_t)kCloudsReverbLfoQ29[i] << 17;
+        lfo_y1_[i] = (int64_t)kCloudsReverbLfoQ29[i + (lofi_ ? 2 : 0)] << 17;
         lfo_y0_[i] = (int64_t)1 << 47;
         lfo_value_[i] = ReverbLfo(i, false);                /* value() until the first step */
     }
 }
 
+void Clouds::set_lofi(bool lofi)
+{
+    if (lofi == lofi_) return;
+    lofi_ = lofi;
+    max_grains_ = max_grains_for_quality();
+    Reset();
+}
+
+int32_t Clouds::max_grains_for_quality() const { return lofi_ ? kCloudsMaxGrainsLo : kCloudsMaxGrainsHi; }
+
 /* AudioBuffer::WriteFade, both channels in step (Clouds keeps two buffers whose heads move together) */
 void Clouds::WriteBuffer(const int32_t* in, int32_t n, bool write)
 {
-    const int32_t size = kCloudsBufferSamples - 8;          /* kInterpolationTail */
+    const int32_t size = buffer_size();
     if (!write) {
         /* frozen: keep recording a little into the tail, to crossfade with when recording resumes */
         for (int32_t i = 0; i < n && crossfade_counter_ < 256; ++i) {
@@ -402,13 +458,14 @@ void Clouds::WriteBuffer(const int32_t* in, int32_t n, bool write)
             tail_[1][crossfade_counter_] = (int16_t)clip16(trunc_shift((int64_t)in[2 * i + 1] * 32767, 24));
             ++crossfade_counter_;
         }
-    } else if (!crossfade_counter_ && write_head_ >= 8 && write_head_ < size - n) {
-        for (int32_t i = 0; i < n; ++i) {                   /* the common case: * 32767 */
+    } else if (!lofi_ && !crossfade_counter_ && write_head_ >= 8 && write_head_ < size - n) {
+        for (int32_t i = 0; i < n; ++i) {                   /* the common case at 16 bits: * 32767 */
             buf_[2 * write_head_] = (int16_t)clip16(trunc_shift((int64_t)in[2 * i] * 32767, 24));
             buf_[2 * write_head_ + 1] = (int16_t)clip16(trunc_shift((int64_t)in[2 * i + 1] * 32767, 24));
             ++write_head_;
         }
     } else {
+        uint8_t* b8 = (uint8_t*)buf_;
         for (int32_t i = 0; i < n; ++i) {                   /* Write(): * 32768, the tail copied, the crossfade */
             int32_t gain = 0, t = 0;
             if (crossfade_counter_) {
@@ -420,8 +477,14 @@ void Clouds::WriteBuffer(const int32_t* in, int32_t n, bool write)
                 int32_t sample = in[2 * i + c];
                 if (gain) sample += m30(((int32_t)tail_[c][t < 256 ? t : 255] << 9) - sample, gain);
                 int16_t v = (int16_t)clip16(trunc_shift(sample, 9));
-                buf_[2 * write_head_ + c] = v;
-                if (write_head_ < 8) buf_[2 * (write_head_ + size) + c] = v;
+                if (lofi_) {
+                    uint8_t u = lin2mulaw(v);
+                    b8[2 * write_head_ + c] = u;
+                    if (write_head_ < 8) b8[2 * (write_head_ + size) + c] = u;
+                } else {
+                    buf_[2 * write_head_ + c] = v;
+                    if (write_head_ < 8) buf_[2 * (write_head_ + size) + c] = v;
+                }
             }
             if (++write_head_ >= size) write_head_ = 0;
         }
@@ -431,31 +494,43 @@ void Clouds::WriteBuffer(const int32_t* in, int32_t n, bool write)
 /* GranularSamplePlayer::Play, with the processor's reading of DENSITY and TEXTURE */
 void Clouds::Play(const CloudsPatch& p, int32_t n)
 {
-    const int32_t size = kCloudsBufferSamples - 8;
+    const int32_t size = buffer_size();
     /* DENSITY: the overlap either side of noon, the seeding random (left) or regular (right); in float32 as Clouds
      * computes it, since the grains' timing hangs on its comparisons */
-    const F c053 = { 8891924, -24 }, c047 = { 15770583, -25 }, c212 = { 8891924, -22 };
-    F dens = fround(p.density, -16), ov = { 0, 0 };
-    bool deterministic = p.density < 32768u;
-    if (!fless(dens, c053)) ov = fmul(fadd(dens, fneg(c053)), c212);
-    else if (!fless(c047, dens)) ov = fmul(fadd(c047, fneg(dens)), c212);
-    /* TEXTURE: the window */
-    const F c1333 = { 11182014, -23 }, c075 = { 12582912, -24 };
-    F tex = fround(p.texture, -16), ws = { 8388608, -23 };
-    if (fless(tex, c075)) ws = fmul(tex, c1333);
-    uint32_t window_shape = (uint32_t)fq30(ws);
-
+    /* (all of this float32 arithmetic is kept while its inputs hold: it was a twentieth of the CPU, every block) */
     const int32_t max = max_grains_;
-    F target = fmul(fint(max), fmul(fmul(ov, ov), ov));
-    /* GetFloat() < p, p = target / hint: the word (as float) under ceil(p 2^32); phasor >= space = hint / target:
-     * the phasor (an integer) at ceil(space) */
-    uint64_t prob_ceil = 0, space_ceil = (uint64_t)1 << 40;
-    if (target.m) {
-        F prob = fdiv(target, hint_);
-        prob.e += 32;
-        prob_ceil = (uint64_t)fceil(prob);
-        space_ceil = (uint64_t)fceil(fdiv(hint_, target));
+    if (p.density != pc_.density || max != pc_.max || p.texture != pc_.texture || hint_.m != pc_.hint.m ||
+        hint_.e != pc_.hint.e) {
+        const F c053 = { 8891924, -24 }, c047 = { 15770583, -25 }, c212 = { 8891924, -22 };
+        F dens = fround(p.density, -16), ov = { 0, 0 };
+        if (!fless(dens, c053)) ov = fmul(fadd(dens, fneg(c053)), c212);
+        else if (!fless(c047, dens)) ov = fmul(fadd(c047, fneg(dens)), c212);
+        /* TEXTURE: the window */
+        const F c1333 = { 11182014, -23 }, c075 = { 12582912, -24 }, one = { 8388608, -23 }, two = { 8388608, -22 };
+        F tex = fround(p.texture, -16), ws = { 8388608, -23 };
+        if (fless(tex, c075)) ws = fmul(tex, c1333);
+        F target = fmul(fint(max), fmul(fmul(ov, ov), ov));
+        /* GetFloat() < p, p = target / hint: the word (as float) under ceil(p 2^32); phasor >= space = hint /
+         * target: the phasor (an integer) at ceil(space) */
+        uint64_t prob_ceil = 0, space_ceil = (uint64_t)1 << 40;
+        if (target.m) {
+            F prob = fdiv(target, hint_);
+            prob.e += 32;
+            prob_ceil = (uint64_t)fceil(prob);
+            space_ceil = (uint64_t)fceil(fdiv(hint_, target));
+        }
+        F window_gain = fadd(one, fmul(two, ws));
+        if (fless(two, window_gain)) window_gain = two;
+        pc_.density = p.density; pc_.max = max; pc_.texture = p.texture; pc_.hint = hint_;
+        pc_.ov = ov; pc_.ws = ws; pc_.target = target; pc_.prob_ceil = prob_ceil; pc_.space_ceil = space_ceil;
+        pc_.xfade = fadd(one, fmul(fadd(window_gain, fneg(one)), ov));   /* Crossfade(1, wg, overlap) */
+        pc_.window_shape = (uint32_t)fq30(ws);
     }
+    const F ov = pc_.ov, target = pc_.target;
+    const uint32_t window_shape = pc_.window_shape;
+    bool deterministic = p.density < 32768u;
+    uint64_t prob_ceil = pc_.prob_ceil, space_ceil = pc_.space_ceil;
+    (void)ov;
     if (deterministic) prob_ceil = 0; else grain_rate_phasor_ = -1000;
     bool below_target = fless(num_grains_, target);
 
@@ -513,18 +588,20 @@ void Clouds::Play(const CloudsPatch& p, int32_t n)
     }
 
     for (int32_t i = 0; i < n * 2; ++i) acc_[i] = 0;
-    for (int32_t i = 0; i < kCloudsMaxGrains; ++i) grains_[i].OverlapAdd(buf_, size, acc_, n);
+    if (num_available < max || active_above)
+        for (int32_t i = 0; i < kCloudsMaxGrains; ++i) grains_[i].OverlapAdd(buf_, lofi_, size, acc_, n);
 
     /* the gain: 1 / sqrt(grains - 1), more with the overlap for the narrower windows */
-    F active = fint(max - num_available + active_above);
-    F err = fadd(active, fneg(num_grains_));
-    const F c09 = { 15099494, -24 }, c02 = { 13421773, -26 }, one = { 8388608, -23 }, two = { 8388608, -22 };
-    num_grains_ = fadd(num_grains_, fmul(err.m > 0 ? c09 : c02, err));
-    F gain_f = one;
-    if (fless(two, num_grains_)) gain_f = rsqrt_carmack(fadd(num_grains_, fneg(one)));
-    F window_gain = fadd(one, fmul(two, ws));
-    if (fless(two, window_gain)) window_gain = two;
-    gain_f = fmul(gain_f, fadd(one, fmul(fadd(window_gain, fneg(one)), ov)));   /* Crossfade(1, wg, overlap) */
+    int32_t active_n = max - num_available + active_above;
+    const F one = { 8388608, -23 }, two = { 8388608, -22 };
+    if (active_n || num_grains_.m) {                        /* (no grains, none lately: nothing moves) */
+        F err = fadd(fint(active_n), fneg(num_grains_));
+        const F c09 = { 15099494, -24 }, c02 = { 13421773, -26 };
+        num_grains_ = fadd(num_grains_, fmul(err.m > 0 ? c09 : c02, err));
+        if (num_grains_.e < -60) num_grains_.m = 0;         /* (float32 would be denormal there: no grains) */
+    }
+    F gain_f = pc_.xfade;
+    if (fless(two, num_grains_)) gain_f = fmul(rsqrt_carmack(fadd(num_grains_, fneg(one))), gain_f);
     int32_t gain = fq30(gain_f) >> 1;                                             /* Q29 */
     for (int32_t t = 0; t < n; ++t) {
         gain_normalization_ += (int32_t)(((int64_t)(gain - gain_normalization_) * k0_01) >> 30);
@@ -539,8 +616,10 @@ void Clouds::Diffuse(int32_t amount, int32_t n)
     const int32_t mask = kCloudsDiffuserSize - 1;
     int32_t* buf = diffuser_;
     int32_t wp = diffuser_wp_;
-#define FOM_AP(k) { int32_t r_ = buf[(wp + kDiffuserBase[k] + kDiffuserLength[k] - 1) & mask]; \
-                    acc += mt30(r_, k0_625); buf[(wp + kDiffuserBase[k]) & mask] = acc; acc = mt30(acc, -k0_625) + r_; }
+    const int32_t* base = lofi_ ? kDiffuserBaseLo : kDiffuserBase;
+    const int32_t* len = lofi_ ? kDiffuserLengthLo : kDiffuserLength;
+#define FOM_AP(k) { int32_t r_ = buf[(wp + base[k] + len[k] - 1) & mask]; \
+                    acc += mt30(r_, k0_625); buf[(wp + base[k]) & mask] = acc; acc = mt30(acc, -k0_625) + r_; }
     for (int32_t t = 0; t < n; ++t) {
         wp = (wp - 1) & mask;
         int32_t acc = out_[2 * t];
@@ -559,7 +638,7 @@ int32_t Clouds::ReverbLfo(int32_t i, bool next)
 {
     if (next) {
         int64_t t = lfo_y0_[i];
-        int64_t delta = ((int64_t)1 << 30) - kCloudsReverbLfoQ29[i];
+        int64_t delta = ((int64_t)1 << 30) - kCloudsReverbLfoQ29[i + (lofi_ ? 2 : 0)];
         int64_t prod = FloatGridSigned(2 * t - ((delta * t) >> 29));
         lfo_y0_[i] = FloatGridSigned(prod - lfo_y1_[i]);
         lfo_y1_[i] = t;
@@ -575,8 +654,12 @@ void Clouds::Reverb(int32_t amount, int32_t krt, int32_t klp, int32_t n)
     uint16_t* buf = reverb_;
     int32_t wp = reverb_wp_;
     int32_t lp1 = lp_decay_[0], lp2 = lp_decay_[1];
-    const int32_t* base = kReverbBase;
-#define TAIL(k) buf[(wp + base[k] + kReverbLength[k] - 1) & mask]
+    const int32_t* base = lofi_ ? kReverbBaseLo : kReverbBase;
+    const int32_t* len = lofi_ ? kReverbLengthLo : kReverbLength;
+    /* (LO: the lines at half length; the offsets halve with them) */
+    const int32_t sh = lofi_ ? 1 : 0, ap1_out = 10 >> sh, ap1_mod = 60 >> sh, ap1_in = 100 >> sh;
+    const int32_t del2_out = 4680 >> sh, del2_mod = 100 >> sh;
+#define TAIL(k) buf[(wp + base[k] + len[k] - 1) & mask]
 #define HEAD(k) buf[(wp + base[k]) & mask]
     for (int32_t t = 0; t < n; ++t) {
         wp = (wp - 1) & mask;
@@ -586,11 +669,11 @@ void Clouds::Reverb(int32_t amount, int32_t krt, int32_t klp, int32_t n)
         }
         int32_t* io = &out_[2 * t];
         /* smear AP1 inside the loop: Interpolate(ap1, 10 + 60 lfo1), written back 100 samples in */
-        int64_t off = ((int64_t)10 << 30) + (int64_t)60 * lfo_value_[0];
+        int64_t off = ((int64_t)ap1_out << 30) + (int64_t)ap1_mod * lfo_value_[0];
         int32_t oi = (int32_t)(off >> 30), of = (int32_t)(off & (kQ30 - 1));
         int32_t a = dec12(buf[(wp + oi + base[0]) & mask]), b = dec12(buf[(wp + oi + base[0] + 1) & mask]);
         int32_t acc = a + mt30(b - a, of);
-        buf[(wp + base[0] + 100) & mask] = comp12(acc);
+        buf[(wp + base[0] + ap1_in) & mask] = comp12(acc);
         acc = mt30(io[0] + io[1], gain);
 #define FOM_AP(k) { int32_t r_ = dec12(TAIL(k)); acc += mt30(r_, kap); HEAD(k) = comp12(acc); acc = mt30(acc, -kap) + r_; }
         FOM_AP(0) FOM_AP(1) FOM_AP(2) FOM_AP(3)             /* diffuse */
@@ -598,7 +681,7 @@ void Clouds::Reverb(int32_t amount, int32_t krt, int32_t klp, int32_t n)
         int32_t apout = acc;
         /* the loop, left */
         acc = apout;
-        off = ((int64_t)4680 << 30) + (int64_t)100 * lfo_value_[1];
+        off = ((int64_t)del2_out << 30) + (int64_t)del2_mod * lfo_value_[1];
         oi = (int32_t)(off >> 30); of = (int32_t)(off & (kQ30 - 1));
         a = dec12(buf[(wp + oi + base[9]) & mask]); b = dec12(buf[(wp + oi + base[9] + 1) & mask]);
         acc += mt30(a + mt30(b - a, of), krt);
@@ -634,7 +717,7 @@ void Clouds::Run(const CloudsPatch& p, const int32_t* in, int32_t n)
         fb_feedback_ = p.feedback;
         uint64_t f2 = ((uint64_t)p.feedback * p.feedback);                        /* Q32 */
         uint64_t num = ((uint64_t)20 << 32) + 100 * f2;                            /* Q32 Hz */
-        uint32_t f = Udiv64(num << 6, 32000u);                                     /* f / fs, Q38 */
+        uint32_t f = Udiv64(num << 6, lofi_ ? 16000u : 32000u);                     /* f / fs, Q38 */
         uint32_t fq30 = f >> 8;
         int64_t ff = ((int64_t)fq30 * fq30) >> 30;                                 /* Q30 */
         /* pi + f^2 (3.260e-01 pi^3 + 1.823e-01 pi^5 f^2), Q28 */
@@ -693,13 +776,16 @@ void Clouds::Run(const CloudsPatch& p, const int32_t* in, int32_t n)
             lp_decay_[0] = lp_decay_[1] = 0;
             reverb_rest_ = false;
         }
-        Reverb(m30(ra, k0_54), k0_35 + m30(k0_63, ra), k0_6 + m30(k0_37, feedback), n);
+        int32_t klp = k0_6 + m30(k0_37, feedback);
+        if (lofi_) klp = 2 * klp - m30(klp, klp);           /* (the low-pass's one pole, at half the rate) */
+        Reverb(m30(ra, k0_54), k0_35 + m30(k0_63, ra), klp, n);
     } else reverb_rest_ = true;
 }
 
 void Clouds::set_max_grains(int32_t n)
 {
-    max_grains_ = n < 4 ? 4 : n > kCloudsMaxGrains ? kCloudsMaxGrains : n;
+    int32_t top = max_grains_for_quality();
+    max_grains_ = n < 4 ? 4 : n > top ? top : n;
 }
 
 void Clouds::Process(const CloudsPatch& p, const int32_t* in, int32_t* wet, int32_t n)
@@ -758,6 +844,21 @@ void CloudsFx::Init(int16_t* buffer, int32_t* diffuser, uint16_t* reverb)
     fifo_write_ = 50;                                       /* 50 frames of silence ahead: the blocks come in bursts */
     for (int32_t i = 0; i < 128 * 2; ++i) fifo_[i] = 0;
     fade_out_ = kQ30;
+    lofi_ = false;
+}
+
+void CloudsFx::set_lofi(bool lofi)
+{
+    if (lofi == lofi_) return;
+    lofi_ = lofi;
+    clouds_.set_lofi(lofi);
+    for (int32_t i = 0; i < 64; ++i) { down_hist_[i] = 0; up_hist_[i] = 0; }
+    down_pos_ = down_phase_ = up_pos_ = up_phase_ = 0;
+    down_count_ = 1;
+    block_fill_ = 0;
+    fifo_read_ = 0;
+    fifo_write_ = 50;
+    for (int32_t i = 0; i < 128 * 2; ++i) fifo_[i] = 0;
 }
 
 /* 16 taps on a stereo history (L R interleaved, x at the newest frame, older ones before it): both channels, Q30 */
@@ -781,28 +882,30 @@ void CloudsFx::Process(const CloudsPatch& p, int32_t* io, size_t n)
         dh[1] = dh[33] = (int16_t)clip16(dry_r);
         down_pos_ = (down_pos_ + 1) & 15;
         if (--down_count_ == 0) {
-            const int16_t* h = kCloudsSrcDown[down_phase_];
+            const int16_t* h = lofi_ ? kCloudsSrcDownLo[down_phase_] : kCloudsSrcDown[down_phase_];
             const int16_t* x = dh + 32;
             int64_t al = 0, ar = 0;
             int32_t c;
             FOM_FIR16
             block_in_[2 * block_fill_] = (int32_t)(al >> 6);                       /* Q30 -> Q24 */
             block_in_[2 * block_fill_ + 1] = (int32_t)(ar >> 6);
+            const int32_t up = lofi_ ? 160 : 320;               /* (32 or 16 kHz: 320 or 160 to 441) */
             down_phase_ += 441;
-            if (down_phase_ >= 640) { down_phase_ -= 640; down_count_ = 2; }
-            else { down_phase_ -= 320; down_count_ = 1; }
-            if (++block_fill_ == kCloudsBlock) {
+            down_count_ = 0;
+            while (down_phase_ >= up) { down_phase_ -= up; ++down_count_; }
+            const int32_t block = lofi_ ? kCloudsBlock / 2 : kCloudsBlock;   /* (LO: Clouds' 16 samples a block) */
+            if (++block_fill_ == block) {
                 block_fill_ = 0;
-                clouds_.Process(p, block_in_, block_wet_, kCloudsBlock);
+                clouds_.Process(p, block_in_, block_wet_, block);
                 /* 32 -> 44.1 kHz, into the FIFO */
-                for (int32_t t = 0; t < kCloudsBlock; ++t) {
+                for (int32_t t = 0; t < block; ++t) {
                     int32_t* uh = &up_hist_[2 * up_pos_];
                     uh[0] = uh[32] = block_wet_[2 * t] >> 9;
                     uh[1] = uh[33] = block_wet_[2 * t + 1] >> 9;
                     up_pos_ = (up_pos_ + 1) & 15;
                     const int32_t* x = uh + 32;
                     for (;;) {
-                        const int16_t* h = kCloudsSrcUp[up_phase_];
+                        const int16_t* h = lofi_ ? kCloudsSrcUpLo[up_phase_] : kCloudsSrcUp[up_phase_];
                         uint32_t w = (fifo_write_ & 127u) * 2;
                         int64_t al = 0, ar = 0;
                         int32_t c;
@@ -810,7 +913,7 @@ void CloudsFx::Process(const CloudsPatch& p, int32_t* io, size_t n)
                         fifo_[w] = (int32_t)((al + (1 << 14)) >> 15);
                         fifo_[w + 1] = (int32_t)((ar + (1 << 14)) >> 15);
                         ++fifo_write_;
-                        up_phase_ += 320;
+                        up_phase_ += up;
                         if (up_phase_ >= 441) { up_phase_ -= 441; break; }
                     }
                 }

@@ -17,7 +17,8 @@
  *              Rings has no note-off: a key strikes, DAMPING decides how long it rings.
  *     CLOUDS     GRAIN POSITION, SIZE, DENSITY, TEXTURE (Clouds' granular mode, its knobs as on the module)
  *                MIX   BLEND (dry/wet), SPREAD, FEEDBACK, REVERB
- *                PITCH PITCH, -24..+24 semitones
+ *                PITCH PITCH, -24..+24 semitones; QUALITY HI (16 bits, 32 kHz) or LO (Clouds' low fidelity: 8-bit
+ *                      buffers, 16 kHz, half the CPU; always LO after the sympathetic strings, where HI does not fit)
  *   OCT- OCT+  the octave
  *   PRESETS    the MIDI channel: OMNI (in: all, out: 1) or 1..16
  *   MASTER     the volume (platform.c)
@@ -47,6 +48,7 @@ static uint32_t fm1_ticks(void) { return 0; }   /* (no timer on the host: the CP
 
 /* ---- the sound (runs in the audio ISR: keep it short, no flash, no screen) */
 static volatile uint32_t cpu_now, cpu_peak;     /* the audio ISR's load, per mille of its time budget */
+static volatile uint32_t clouds_peak;           /* Clouds' part of it */
 
 static void app_audio(int32_t *out, uint32_t n)
 {
@@ -58,10 +60,12 @@ static void app_audio(int32_t *out, uint32_t n)
     cpu_now = load;
     if (load > cpu_peak) cpu_peak = load;
     fom_set_load(load);                         /* (Clouds' guard: fewer grains if the time runs short) */
+    load = n ? fom_clouds_ticks() * 1000u / (n * 544u) : 0u;
+    if (load > clouds_peak) clouds_peak = load;
 }
 
 /* ---- what survives a power-off: the panel, and every parameter of the engine */
-#define SET_VERSION 3u
+#define SET_VERSION 4u
 enum { V_POLY, V_MONO };
 static struct {
     uint8_t version, oct, ch, engine, page, voices, clouds, pad;
@@ -113,7 +117,7 @@ static const engine_ui_t ENGINES[FOM_NENGINES] = {
 static const engine_ui_t CLOUDS_UI = {"CLOUDS", 3, {"GRAIN", "MIX", "PITCH"},
      {{FOM_P_C_POSITION, FOM_P_C_SIZE, FOM_P_C_DENSITY, FOM_P_C_TEXTURE},
       {FOM_P_C_BLEND, FOM_P_C_SPREAD, FOM_P_C_FEEDBACK, FOM_P_C_REVERB},
-      {FOM_P_C_PITCH, A_NONE, A_NONE, A_NONE}}};
+      {FOM_P_C_PITCH, FOM_P_C_QUALITY, A_NONE, A_NONE}}};
 static const engine_ui_t *ui(void) { return &ENGINES[set.engine]; }
 /* the pages of the route: the engine's, then Clouds' if it follows */
 static uint32_t npages(void) { return ui()->npages + (set.clouds ? CLOUDS_UI.npages : 0u); }
@@ -308,6 +312,9 @@ static void draw_row(uint32_t k)                /* knob k's parameter on this pa
         case FOM_K_TIME:
             q = (p == FOM_P_GLIDE && !v) ? put(q, "OFF") : put_ms(q, fom_env_ms((uint32_t)v));
             break;
+        case FOM_K_QUALITY:
+            q = put(q, fom_clouds_lofi() ? (v ? "LO" : "LO (AUTO)") : "HI");
+            break;
         case FOM_K_SEMI:
             *q++ = v < 0 ? '-' : v > 0 ? '+' : ' ';
             q = put(put_u(q, (uint32_t)(v < 0 ? -v : v)), " st");
@@ -332,32 +339,38 @@ static void draw_row(uint32_t k)                /* knob k's parameter on this pa
 
 static uint32_t frozen;                         /* Clouds' FREEZE (REC): not kept over a power-off */
 
-/* the route, as boxes with arrows between them: the engine, and Clouds when it follows (filled while frozen) */
+/* the route, as boxes with arrows between them: the engine, and Clouds when it follows (LO: its low fidelity; the box
+ * filled while frozen), with Clouds' share of the audio interrupt's time after it (peak of 0.5 s) */
+static uint32_t clouds_shown;
 static void draw_route(void)
 {
     const char *name[2];
+    char share[8], *q = share;
+    int32_t w[2], x, total = 0;
     uint32_t i, n = 0;
-    int32_t x;
     name[n++] = ui()->name;
-    if (set.clouds) name[n++] = "CLOUDS";
+    if (set.clouds) name[n++] = fom_clouds_lofi() ? "CLOUDS LO" : "CLOUDS";
+    for (i = 0; i < n; i++) { w[i] = (int32_t)text_w(&FONT_S, name[i]) + 16; total += w[i] + (i ? 20 : 0); }
+    if (set.clouds) { q = put(put_u(q, (clouds_shown + 5u) / 10u), "%"); total += 6 + (int32_t)text_w(&FONT_S, share); }
+    *q = 0;
     cv_begin(240, 24, C_BLACK);
-    x = (240 - (int32_t)n * 72 - ((int32_t)n - 1) * 20) / 2;
+    x = (240 - total) / 2;
     for (i = 0; i < n; i++) {
-        int32_t tw = (int32_t)text_w(&FONT_S, name[i]);
         uint32_t fill = i == 1u && frozen;
         if (i) {                                /* the arrow into this box */
             cv_rect(x - 18, 11, 14, 2, C_ACC);
             cv_rect(x - 7, 8, 2, 8, C_ACC);
             cv_rect(x - 5, 10, 2, 4, C_ACC);
         }
-        if (fill) cv_rect(x, 0, 72, 24, C_ACC);
+        if (fill) cv_rect(x, 0, w[i], 24, C_ACC);
         else {
-            cv_rect(x, 0, 72, 1, C_ACC); cv_rect(x, 23, 72, 1, C_ACC);
-            cv_rect(x, 0, 1, 24, C_ACC); cv_rect(x + 71, 0, 1, 24, C_ACC);
+            cv_rect(x, 0, w[i], 1, C_ACC); cv_rect(x, 23, w[i], 1, C_ACC);
+            cv_rect(x, 0, 1, 24, C_ACC); cv_rect(x + w[i] - 1, 0, 1, 24, C_ACC);
         }
-        cv_text(x + (72 - tw) / 2, 4, &FONT_S, name[i], fill ? C_BLACK : C_WHITE);
-        x += 92;
+        cv_text(x + 8, 4, &FONT_S, name[i], fill ? C_BLACK : C_WHITE);
+        x += w[i] + 20;
     }
+    if (set.clouds) cv_text(x - 14, 4, &FONT_S, share, C_OFF);
     cv_blit(0, Y_ROUTE);
 }
 
@@ -480,6 +493,7 @@ static void app_main(void)
 #endif
     for (k = 0; k < 4u; k++) row_drawn[k] = ~0u;
     fom_init();
+    fom_set_ticks(fm1_ticks);                   /* (Clouds' share of the CPU, for the screen) */
     if (settings_load(&set, sizeof set) || !set_valid())
         set_defaults();
     if (set.page >= npages()) set.page = 0;
@@ -553,6 +567,8 @@ static void app_main(void)
             t_cpu = fm1_ms;
             cpu_shown = cpu_peak;
             cpu_peak = cpu_now;
+            clouds_shown = clouds_peak;
+            clouds_peak = 0;
         }
 
         oct = (int8_t)set.oct;
@@ -578,7 +594,8 @@ static void app_main(void)
 
         idle_ok = 1;                            /* the drawing below may read MIDI meanwhile (LCD_IDLE) */
         if (set.engine != title_drawn) { title_drawn = set.engine; draw_title(); tabs_drawn = ~0u; }
-        if ((st = set.engine | set.clouds << 4 | frozen << 5) != route_drawn) { route_drawn = st; draw_route(); }
+        if ((st = set.engine | set.clouds << 4 | frozen << 5 | (uint32_t)fom_clouds_lofi() << 6 |
+                  ((clouds_shown + 5u) / 10u) << 8) != route_drawn) { route_drawn = st; draw_route(); }
         if ((st = (uint32_t)set.p[FOM_P_SHAPE] | set.engine << 8 | (uint32_t)set.p[FOM_P_MODEL] << 12) != shape_drawn) {
             shape_drawn = st;
             draw_shape();

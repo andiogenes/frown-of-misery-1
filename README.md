@@ -29,12 +29,12 @@ the screen and flash storage. The Braids code and its 44.1 kHz adapter come from
 | RINGS page PART | POLY (1, 2 or 4 voices taking the strikes in turn), FINE tune, LEVEL. Rings has no note-off: a key strikes, DAMPING decides how long it rings. |
 | CLOUDS page GRAIN | POSITION, SIZE, DENSITY, TEXTURE: Clouds' granular mode, its knobs as on the module (DENSITY: regular grains left of noon, random right of it, none at noon) |
 | CLOUDS page MIX | BLEND (dry/wet), SPREAD, FEEDBACK, REVERB: the four on Clouds' BLEND knob |
-| CLOUDS page PITCH | PITCH, −24 … +24 semitones |
+| CLOUDS page PITCH | PITCH, −24 … +24 semitones; QUALITY: HI (16 bits, 32 kHz) or LO (Clouds' low fidelity: 8-bit μ-law buffers of 4 s, 16 kHz, less CPU). After the sympathetic strings it is always LO (shown as LO (AUTO)). |
 | OCT- / OCT+ | octave |
 | PRESETS | MIDI channel: OMNI, or 1–16 |
 | MASTER | volume |
 | MIDI in (USB, TRS) | notes with velocity, pitch bend ±2 semitones, a clock display |
-| screen | engine, shape, page, the four parameters, last note, the route, and the audio interrupt's CPU load (peak over 0.5 s; also the thin bar along the bottom) |
+| screen | engine, shape, page, the four parameters, last note, the route (with Clouds' own share of the CPU after its box), and the audio interrupt's CPU load (peak over 0.5 s; also the thin bar along the bottom) |
 
 All settings are saved to flash 2 s after the last change, once nothing is sounding.
 SMK-37 builds also work (`--board smk37`), as they do in Dinghy.

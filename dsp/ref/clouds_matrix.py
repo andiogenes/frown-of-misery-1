@@ -10,7 +10,9 @@ The input is Rings' string (ref_rings, five notes), the module's input as the FM
   the FM-1's path   CloudsFx at 44.1 kHz (port_clouds fx=1: resampled in and out, the dry signal mixed at 44.1 kHz)
               vs the reference: the third-octave colour within 1.5 dB (the resamplers roll off above 11 kHz), the
               envelope within 2.5 dB (the wet signal is 2 ms late there, so a frozen buffer, or grains reading just
-              behind the record head, hold the notes' attacks 2 ms elsewhere). DENSITY near noon
+              behind the record head, hold the notes' attacks 2 ms elsewhere).
+  LO          Clouds' low fidelity (quality=2): the FM-1 runs all of it at 16 kHz where Clouds keeps its diffuser and
+              reverb at 32 kHz, so only the FM-1's path, against Clouds' own lo-fi: colour and envelope as above. DENSITY near noon
               leaves a grain or two in four seconds: only the arithmetic is measured there.
 
   clouds_matrix.py [--quick]          (from dsp/ref, after `make port`)"""
@@ -69,8 +71,20 @@ def main():
         bad += not ok
         name = " ".join(f"{k}={v}" for k, v in c.items())
         print(f"{name:78} {a['snr']:6.1f} {f['lsd']:6.2f} {f['env']:6.2f}  {'ok' if ok else 'FAILED'}")
+    for c in ([dict(density=0.6), dict(density=0.9, texture=0.9), dict(density=0.2, pitch=12),
+               dict(reverb=0.8, feedback=0.5)] if not quick else [dict(density=0.6)]):
+        args = [f"{k}={v}" for k, v in c.items()] + [SECONDS, "quality=2"]
+        run("build/ref_clouds", "build/cm_in.wav", "build/cm_ref.wav", *args)
+        run("build/port_clouds", "build/cm_in.wav", "build/cm_fx.wav", "fx=1", *args)
+        x, xr = compare.read("build/cm_ref.wav")
+        z, zr = compare.read("build/cm_fx.wav")
+        f = compare.measure(x, xr, z, zr, 10.0)
+        ok = f["lsd"] <= LSD_MAX and f["env"] <= ENV_MAX
+        bad += not ok
+        name = "LO " + " ".join(f"{k}={v}" for k, v in c.items())
+        print(f"{name:78} {'':6} {f['lsd']:6.2f} {f['env']:6.2f}  {'ok' if ok else 'FAILED'}")
     print(f"{bad} case(s) outside snr >= {SNR_MIN} dB, fx lsd <= {LSD_MAX}, env <= {ENV_MAX} dB" if bad
-          else "Clouds (granular): the port matches the reference")
+          else "Clouds (granular, HI and LO): the port matches the reference")
     sys.exit(1 if bad else 0)
 
 
