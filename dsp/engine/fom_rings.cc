@@ -2,6 +2,7 @@
 #include "fom_rings.h"
 
 #include "fom_rings_tables.h"
+#include "fom_fixed.h"
 #ifdef FOM_RINGS_DEBUG
 #include <cstdio>
 #endif
@@ -1214,4 +1215,13 @@ void RingsStrings::Render(const RingsPatch& patch, int32_t level, int32_t* out, 
     }
 }
 
+}  // namespace fom
+
+/* ==== the helpers other ports share (fom_fixed.h) ================================================================== */
+
+namespace fom {
+uint64_t SemitonesToRatioQ30(int64_t semitones_q24) { return st_ratio_q30(semitones_q24); }
+int32_t SoftLimitQ24(int32_t x) { return soft_limit(x); }
+int64_t FloatGridSigned(int64_t x) { return float_grid_signed(x); }
+uint32_t Udiv64(uint64_t n, uint32_t d) { return udiv64(n, d); }
 }  // namespace fom

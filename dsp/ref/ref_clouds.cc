@@ -55,6 +55,14 @@ int main(int argc, char** argv)
         else if (k == "seconds") seconds = v;
         else { std::fprintf(stderr, "unknown key: %s\n", k.c_str()); return 2; }
     }
+    // the knobs in the FM-1's steps (1/65536, as dsp/engine's CloudsPatch has them), so a comparison with the port
+    // measures the arithmetic, not the knobs' resolution: DENSITY 0.2 is not 0.2f there
+    for (float* v : {&position, &size, &density, &texture, &blend, &spread, &feedback, &reverb}) {
+        float q = *v <= 0.0f ? 0.0f : *v >= 1.0f ? 65535.0f : (float)(long)(*v * 65536.0f + 0.5f);
+        if (q > 65535.0f) q = 65535.0f;
+        *v = q / 65536.0f;
+    }
+    pitch = (float)(long)(pitch * 65536.0f + (pitch < 0 ? -0.5f : 0.5f)) / 65536.0f;
 
     std::vector<int16_t> src;
     int ch = 1, src_rate = 32000;

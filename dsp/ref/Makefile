@@ -17,7 +17,7 @@ CLOUDS := eurorack/clouds/dsp/granular_processor.cc eurorack/clouds/dsp/correlat
 STMLIB := eurorack/stmlib/dsp/units.cc eurorack/stmlib/dsp/atan.cc eurorack/stmlib/utils/random.cc
 
 .PHONY: all check port clean
-all: $(BUILD)/ref_rings $(BUILD)/ref_clouds $(BUILD)/port_rings
+all: $(BUILD)/ref_rings $(BUILD)/ref_clouds $(BUILD)/port_rings $(BUILD)/port_clouds
 
 $(BUILD):
 	mkdir -p $(BUILD)
@@ -45,9 +45,14 @@ $(BUILD)/port_rings: port_rings.cc wav.h ../engine/fom_rings.cc ../engine/fom_ri
 $(BUILD)/port_rings44: port_rings.cc wav.h ../engine/fom_rings.cc ../engine/fom_rings.h ../engine/fom_rings_tables.h | $(BUILD)
 	$(CXX) $(CXXFLAGS) -DFOM_RINGS_TEST_44K -I../engine -I. -o $@ port_rings.cc ../engine/fom_rings.cc
 
+CLOUDS_PORT := ../engine/fom_clouds.cc ../engine/fom_clouds.h ../engine/fom_clouds_tables.h ../engine/fom_fixed.h
+$(BUILD)/port_clouds: port_clouds.cc wav.h $(CLOUDS_PORT) ../engine/fom_rings.cc | $(BUILD)
+	$(CXX) $(CXXFLAGS) -I../engine -I. -o $@ port_clouds.cc ../engine/fom_clouds.cc ../engine/fom_rings.cc
+
 # the fixed-point ports against the references (rings_matrix.py)
-port: $(BUILD)/ref_rings $(BUILD)/ref_rings44 $(BUILD)/port_rings $(BUILD)/port_rings44
+port: $(BUILD)/ref_rings $(BUILD)/ref_rings44 $(BUILD)/port_rings $(BUILD)/port_rings44 $(BUILD)/ref_clouds $(BUILD)/port_clouds
 	python3 rings_matrix.py
+	python3 clouds_matrix.py
 
 check: all
 	python3 compare.py --selftest
