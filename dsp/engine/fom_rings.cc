@@ -624,6 +624,9 @@ void RingsString::Process(const int32_t* in, int32_t* out, int32_t* aux, int32_t
     else ProcessInternal<false>(in, out, aux, n);
 }
 
+#ifdef FOM_RINGS_COUNT
+long g_steady_blocks, g_all_blocks;
+#endif
 template <bool kDispersion>
 void RingsString::ProcessInternal(const int32_t* in, int32_t* out, int32_t* aux, int32_t n)
 {
@@ -709,6 +712,86 @@ void RingsString::ProcessInternal(const int32_t* in, int32_t* out, int32_t* aux,
         noise_filter = (int64_t)st_ratio_q30((((int64_t)b - 65536) * 48) << 8);   /* SemitonesToRatio((b - 1) 48) */
         /* 1 / (.2 + nf) reaches 3.8: Q28 (in Q30 it did not fit the division's 32-bit quotient) */
         noise_gain = (int64_t)udiv64((uint64_t)1 << 58, (uint32_t)(214748365 + noise_filter));
+    }
+
+    /* The steady case, the common one: a string at its speed (src 1), no dispersion, every interpolation settled
+     * (a held note, knobs still) but the pickup's position, which the sympathetic strings' LFOs keep moving. The
+     * delay, the Hermite fraction and the FIR's taps are constants of the block then, the states can stay in
+     * registers, and only the comb tap is stepped. The arithmetic is the general loop's below, step
+     * for step: the output is the same to the bit (dsp/ref/rings_matrix.py). */
+#ifdef FOM_RINGS_COUNT
+    ++g_all_blocks;
+#endif
+    if (!kDispersion && src_ratio == kOne && !delay_inc && !comp_inc && !fir_brightness_inc_ &&
+        !fir_damping_inc_) {
+#ifdef FOM_RINGS_COUNT
+        ++g_steady_blocks;
+#endif
+        const uint32_t m = kStringDelay - 1;
+        const int32_t d0 = (int32_t)((delay_v + 128) >> 8);            /* Q16 */
+        int64_t dl = mrw(d0, (int32_t)comp_v, 30) - one16;
+        if (dl < 0) dl = 0;
+        const uint32_t hi = (uint32_t)dl >> 16;
+        const int32_t f = (int32_t)(dl & 0xFFFF);
+        int32_t pv = (int32_t)pos_v;
+        const int32_t pinc = (int32_t)pos_inc;
+        /* the taps in fields, read in the loop: as locals the compiler hoisted them sign-extended to 64 bits and,
+         * short of registers, spilled them and multiplied 64 x 64 (three multiplies each). Read from the object
+         * (which the delay line's stores could alias), each is one 32-bit load. */
+        fir_h0_ = (int32_t)((one30 + fir_brightness_) >> 1);
+        fir_h1_ = (int32_t)((one30 - fir_brightness_) >> 2);
+        int32_t* const line = line_;
+        uint32_t w = write_;
+        int32_t fx = fir_x_, fxx = fir_x__, s1 = iir_s1_, s2 = iir_s2_, s = out_sample_[0];
+        int32_t a = aux_sample_[0], ao = aux_sample_[1];
+        for (int32_t k = 0; k < n; ++k) {
+            /* ReadHermite(dl) */
+            uint32_t t = w + hi + kStringDelay;
+            int32_t xm1 = line[(t - 1) & m], x0 = line[t & m], x1 = line[(t + 1) & m], x2 = line[(t + 2) & m];
+            int32_t c = (x1 - xm1) / 2, v = x0 - x1, ww = c + v;
+            int32_t aa = ww + v + (x2 - x0) / 2, b_neg = ww + aa;
+            int32_t y = (int32_t)(mrw((int32_t)(mrw(aa, f, 16) - b_neg), f, 16) + c);
+            int32_t x = (int32_t)(mrw(y, f, 16) + x0) + in[k];
+            /* DampingFilter */
+            int64_t z = mrw(fir_h0_, fx, 30) + mrw(fir_h1_, x + fxx, 30);
+            fxx = fx;
+            fx = x;
+            x = (int32_t)mrw((int32_t)z, fir_damping_, 30);
+            /* the IIR low-pass */
+            int64_t hp = mrw((int32_t)((int64_t)x - mrw(iir_rg_, s1, 19) - s2), iir_h_, 30);
+            int64_t ghp = mrw(iir_g_, (int32_t)hp, 19);
+            int64_t bp = ghp + s1;
+            s1 = (int32_t)(ghp + bp);
+            int64_t gbp = mrw(iir_g_, (int32_t)bp, 19);
+            int64_t lp = gbp + s2;
+            s2 = (int32_t)(gbp + lp);
+            s = (int32_t)lp;
+            line[w] = s;
+            w = (w - 1u) & m;
+            /* the comb tap: Read(comb_delay), the position stepped as the general loop steps it */
+            pv += pinc;
+            int64_t cd = mrw(d0, pv, 24);
+            if (cd < 0) cd = 0;
+            uint32_t u = w + ((uint32_t)cd >> 16);
+            int32_t ra = line[u & m], rb = line[(u + 1) & m];
+            ao = a;
+            a = (int32_t)(ra + mrw(rb - ra, (int32_t)(cd & 0xFFFF), 16));
+            out[k] += s;
+            aux[k] += a;
+        }
+        write_ = w;
+        fir_x_ = fx; fir_x__ = fxx;
+        iir_s1_ = s1; iir_s2_ = s2;
+        /* the sample before the last: the line holds it (written backwards: the last at w + 1, that one at w + 2);
+         * with n = 24 > 1 it is this block's (no register needed in the loop) */
+        out_sample_[1] = line[(w + 2u) & m];
+        out_sample_[0] = s;
+        aux_sample_[0] = a; aux_sample_[1] = ao;
+        delay_ = delay_v;
+        clamped_position_ = pv;
+        previous_dispersion_ = disp_v;
+        previous_damping_compensation_ = comp_v;
+        return;
     }
 
     for (int32_t k = 0; k < n; ++k) {

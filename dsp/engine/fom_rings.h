@@ -125,6 +125,7 @@ class RingsString {
     int32_t curved_bridge_;        /* Q24 */
     /* DampingFilter: damping and brightness glide over the block, Q30 */
     int32_t fir_x_, fir_x__, fir_brightness_, fir_brightness_inc_, fir_damping_, fir_damping_inc_;
+    int32_t fir_h0_, fir_h1_;      /* the steady loop's taps (see ProcessInternal) */
     /* the IIR damping low-pass (stmlib Svf, Q 0.5): g, r+g Q19, h Q30; states Q24 */
     int32_t iir_g_, iir_rg_, iir_h_, iir_s1_, iir_s2_;
     /* the per-block divisions' results, kept while their inputs hold */

@@ -135,7 +135,7 @@ jobs:
         run: python3 tools/make_site.py emu-dist _site --sha "$GITHUB_SHA" --emu-rev "$FM1_EMU_REV"
 
       # The emulator, as served, boots this build: audio keeps coming, the screen draws, a chord sounds on every
-      # engine, and the firmware's own CPU meter stays under 70 % at the FM-1's 240 MHz.
+      # engine, and the firmware's own CPU meter stays under 60 % at the FM-1's 240 MHz (~85 % on the device).
       - name: Emulator smoke test
         run: node tests/emu_smoke.mjs _site/emu _site/frown.fwsc
 

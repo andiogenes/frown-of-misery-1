@@ -5,10 +5,11 @@
 // (the bar on the screen's bottom two rows, 2.4 px a percent) with notes sounding, at 240 MHz, the FM-1's clock
 // (MD-One's measurement), and fails above the limit given: the audio interrupt must keep up on the device.
 // The same calls as fm1-emu's own web/smoke.mjs; CI runs it before every deploy.
-//   node tests/emu_smoke.mjs _site/emu build/frown.fwsc [MAX_CPU_PERCENT, default 70]
+//   node tests/emu_smoke.mjs _site/emu build/frown.fwsc [MAX_CPU_PERCENT, default 60: the FM-1 read 1.45x the
+//   emulator (Rings' sympathetic strings: 55 % here, 80 % there), so 60 here is ~85 % on the device]
 import { readFileSync } from "node:fs";
 
-const [dirArg = "_site/emu", pkg = "build/frown.fwsc", maxArg = "70"] = process.argv.slice(2);
+const [dirArg = "_site/emu", pkg = "build/frown.fwsc", maxArg = "60"] = process.argv.slice(2);
 const MAX_CPU = Number(maxArg);
 const MHZ = 240;
 const dir = new URL(`${dirArg.replace(/\/$/, "")}/`, `file://${process.cwd()}/`);
