@@ -9,6 +9,11 @@
  * original (dsp/ref/compare.py).
  *
  * Formats: audio Q24 (1.0 = 2^24) inside, as Clouds' floats; the recording buffers 16-bit, as Clouds'; knobs Q16.
+ *
+ * Where it parts from Clouds, for the CPU (the chip does Clouds' work in about 40 % of its audio time at the densest):
+ * a grain's envelope is computed every 4 samples and drawn straight between (within 1e-4); the feedback's high-pass,
+ * the diffuser and the reverb rest while they would change nothing (FEEDBACK 0, TEXTURE under 3/4, no reverb) and
+ * start again from silence; set_max_grains() can hold the grains under Clouds' 32.
  */
 #ifndef FOM_CLOUDS_H
 #define FOM_CLOUDS_H
@@ -40,8 +45,8 @@ class CloudsGrain {
     bool high() const { return high_; }
     void Start(int32_t pre_delay, int32_t buffer_size, int32_t start, int32_t width, int32_t phase_increment,
                uint32_t window_shape_q30, int32_t gain_l_q30, int32_t gain_r_q30, bool high);
-    /* adds its part of a block (Q24, L R) */
-    void OverlapAdd(const int16_t* l, const int16_t* r, int32_t buffer_size, int32_t* out, int32_t n);
+    /* adds its part of a block (Q48, L R) */
+    void OverlapAdd(const int16_t* buf, int32_t buffer_size, int64_t* acc, int32_t n);
 
  private:
     int32_t first_sample_, phase_, phase_increment_, pre_delay_;
@@ -55,8 +60,8 @@ class CloudsGrain {
 
 class Clouds {
  public:
-    /* buffer_l, buffer_r: kCloudsBufferSamples each; diffuser: kCloudsDiffuserSize; reverb: kCloudsReverbSize */
-    void Init(int16_t* buffer_l, int16_t* buffer_r, int32_t* diffuser, uint16_t* reverb);
+    /* buffer: 2 * kCloudsBufferSamples (L R interleaved); diffuser: kCloudsDiffuserSize; reverb: kCloudsReverbSize */
+    void Init(int16_t* buffer, int32_t* diffuser, uint16_t* reverb);
     /* A block (n <= 32 frames at 32 kHz) of the module's input, Q24 L R: writes wet[] (Q24 L R), Clouds' output
      * before its dry/wet mix, times its post gain (1.2) and the wet side of the crossfade at patch.blend, and
      * SoftLimit'ed as its output stage does: what the module puts out, minus the dry part. */
@@ -64,6 +69,9 @@ class Clouds {
     /* The module's whole Process (n <= 32): 16-bit in and out, the dry/wet mix and SoftConvert. The reference
      * harness (dsp/ref/port_clouds.cc). */
     void ProcessShort(const CloudsPatch& patch, const int16_t* in, int16_t* out, int32_t n);
+    /* The most grains at once: Clouds' 32 (the default), fewer where the CPU is short (4..32). The density scales
+     * with it, as Clouds' own count changes with its quality setting. */
+    void set_max_grains(int32_t n);
 
  private:
     void Run(const CloudsPatch& patch, const int32_t* in, int32_t n);   /* out_[]: Clouds' out_ after the reverb */
@@ -73,7 +81,7 @@ class Clouds {
     void Reverb(int32_t amount_q30, int32_t time_q30, int32_t lp_q30, int32_t n);
     int32_t ReverbLfo(int32_t i, bool next);
 
-    int16_t* buf_[2];
+    int16_t* buf_;                                 /* the recording, L R interleaved (Clouds keeps two) */
     int32_t* diffuser_;
     uint16_t* reverb_;
     /* the recording (AudioBuffer) */
@@ -81,6 +89,7 @@ class Clouds {
     int16_t tail_[2][256];
     /* the grains (GranularSamplePlayer) */
     CloudsGrain grains_[kCloudsMaxGrains];
+    int32_t max_grains_;
     CloudsFloat num_grains_;                       /* the smoothed count */
     int32_t gain_normalization_;                   /* Q29 */
     CloudsFloat hint_;                             /* the grain size hint, a float32 as Clouds keeps it */
@@ -94,8 +103,10 @@ class Clouds {
     int32_t fb_s1_[2], fb_s2_[2];                  /* Q24 */
     int32_t fb_[kCloudsBlock * 2];                 /* last block's output, fed back */
     int32_t in_[kCloudsBlock * 2], out_[kCloudsBlock * 2];
+    int64_t acc_[kCloudsBlock * 2];                /* the grains' sum, Q48 */
     /* the diffuser's and the reverb's write pointers, the reverb's LFOs (float32's values, Q48) and low-passes */
     int32_t diffuser_wp_, reverb_wp_;
+    bool diffuser_rest_, reverb_rest_;             /* resting: nothing to do (see Run) */
     int64_t lfo_y0_[2], lfo_y1_[2];
     int32_t lfo_value_[2];                         /* Q30 */
     int32_t lp_decay_[2];                          /* Q24 */
@@ -105,16 +116,17 @@ class Clouds {
  * (it never goes through the resamplers). The wet signal is about 2 ms late. */
 class CloudsFx {
  public:
-    void Init(int16_t* buffer_l, int16_t* buffer_r, int32_t* diffuser, uint16_t* reverb);
+    void Init(int16_t* buffer, int32_t* diffuser, uint16_t* reverb);
     /* n stereo frames, Q15 (L R) in io[], replaced by Clouds' output at patch */
     void Process(const CloudsPatch& patch, int32_t* io, size_t n);
+    void set_max_grains(int32_t n) { clouds_.set_max_grains(n); }
 
  private:
     Clouds clouds_;
-    int16_t down_hist_[2][32];                     /* the last 44.1 kHz inputs (twice: a window never wraps) */
+    int16_t down_hist_[64];                        /* the last 16 inputs at 44.1 kHz, L R, twice (a window never wraps) */
     int32_t down_pos_, down_phase_;                /* where the history ends; the next output's phase / 320 */
     int32_t down_count_;                           /* inputs until the next 32 kHz output */
-    int32_t up_hist_[2][32];                       /* the last wet 32 kHz outputs, Q15 */
+    int32_t up_hist_[64];                          /* the last 16 wet outputs at 32 kHz, Q15, L R, twice */
     int32_t up_pos_, up_phase_;
     int32_t block_in_[kCloudsBlock * 2], block_wet_[kCloudsBlock * 2];
     int32_t block_fill_;

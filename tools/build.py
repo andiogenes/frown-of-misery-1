@@ -170,6 +170,7 @@ def build_loader():
 DSP = SRC / "dsp"
 ENGINE_SRC = [DSP / "engine" / "fom_engine.cc",
               DSP / "engine" / "fom_rings.cc",
+              DSP / "engine" / "fom_clouds.cc",
               DSP / "mi" / "fm1_braids.cc",
               DSP / "mi" / "braids" / "analog_oscillator.cc",
               DSP / "mi" / "braids" / "digital_oscillator.cc",

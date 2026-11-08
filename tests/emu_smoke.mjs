@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Boots our package in the built web emulator (fm1-emu's wasm, as the Pages site serves it) and checks that it
 // runs: audio frames keep coming, the screen draws, the CPU has not halted, and a MIDI note into the jack is
-// louder than silence; for every engine (a program change picks it) and Rings' three models (ALGORITHM). It also reads the firmware's own CPU meter
+// louder than silence; for every engine (a program change picks it), Rings' three models (ALGORITHM) and Clouds after
+// Braids and Rings at its densest. It also reads the firmware's own CPU meter
 // (the bar on the screen's bottom two rows, 2.4 px a percent) with notes sounding, at 240 MHz, the FM-1's clock
 // (MD-One's measurement), and fails above the limit given: the audio interrupt must keep up on the device.
 // The same calls as fm1-emu's own web/smoke.mjs; CI runs it before every deploy.
@@ -45,6 +46,7 @@ const cpu = () => {                                     // the CPU bar: lit pixe
   return w / 2.4;
 };
 const midi = (...b) => b.forEach((v) => x.fm1_midi(v));
+const press = (id) => { x.fm1_key(id, 1); run(0.05); x.fm1_key(id, 0); run(0.05); };   // a panel button (6 EDIT)
 const fail = [];
 
 const frames = run(3);
@@ -55,11 +57,19 @@ if (frames < 2 * 44100) fail.push("too few audio frames (the firmware is not kee
 if (lit < 1000) fail.push("the screen is (nearly) blank");
 
 const CHORD = [48, 55, 60, 64];                         // four notes: every voice busy
-// [name, program change (the engine), ALGORITHM clicks (encoder 1: Rings' model, one step further each time)]
-for (const [name, program, clicks] of [["Braids", 0, 0], ["Rings modal", 1, 0], ["Rings sympathetic strings", 1, 1],
-                                       ["Rings string", 1, 1]]) {
-  midi(0xC0, program);                                  // program change: the engine
+// [name, program change (the route: 0 Braids, 1 Rings, 2 Braids > Clouds, 3 Rings > Clouds), ALGORITHM clicks
+// (encoder 1: Rings' model, from where it is), Clouds' DENSITY to the top (its most grains: page GRAIN is two EDITs
+// past the engine's two pages, DENSITY is KNOB3)]
+// A route may carry its own CPU limit: the sympathetic strings into Clouds are the heaviest pair (~70 % here, ~90 % on
+// the FM-1, where Clouds' guard takes grains off past 85 %: fom_engine.cc).
+for (const [name, program, clicks, dense, limit] of [["Braids", 0, 0], ["Rings modal", 1, 0],
+                                              ["Rings sympathetic strings", 1, 1], ["Rings string", 1, 1],
+                                              ["Braids > Clouds", 2, 0, true], ["Rings modal > Clouds", 3, -2, true],
+                                              ["Rings string > Clouds", 3, 2, true],
+                                              ["Rings sympathetic strings > Clouds", 3, -1, true, 75]]) {
+  midi(0xC0, program);                                  // program change: the route
   if (clicks) { run(0.1); x.fm1_enc(1, clicks); }
+  if (dense) { run(0.1); press(6); press(6); x.fm1_enc(4, 64); }
   run(0.5);
   const quiet = level(0.5);
   for (const n of CHORD) midi(0x90, n, 100);
@@ -69,7 +79,7 @@ for (const [name, program, clicks] of [["Braids", 0, 0], ["Rings modal", 1, 0], 
   for (const n of CHORD) midi(0x80, n, 0);
   console.log(`${name}: silent ${quiet.toFixed(4)}, chord ${note.toFixed(4)}; CPU meter ${load.toFixed(0)} %`);
   if (!(note > 10 * quiet + 0.001)) fail.push(`${name}: a chord does not sound`);
-  if (load > MAX_CPU) fail.push(`${name}: CPU ${load.toFixed(0)} % > ${MAX_CPU} %`);
+  if (load > (limit ?? MAX_CPU)) fail.push(`${name}: CPU ${load.toFixed(0)} % > ${limit ?? MAX_CPU} %`);
   if (x.fm1_halted()) fail.push(`${name}: the CPU halted`);
   run(2.5);                                             // let it ring out before the next engine
 }

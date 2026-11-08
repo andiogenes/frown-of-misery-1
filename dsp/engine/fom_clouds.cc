@@ -2,6 +2,7 @@
 #include "fom_clouds.h"
 
 #include "fom_clouds_tables.h"
+#include "fom_rings_tables.h"   /* (SoftLimit's gain) */
 #include "fom_fixed.h"
 #ifdef FOM_CLOUDS_DEBUG
 #include <cmath>
@@ -14,7 +15,6 @@ namespace {
 
 /* ---- integer helpers (no float, no 64-bit division) */
 
-inline int32_t mulhi(int32_t a, int32_t b) { return (int32_t)(((int64_t)a * b) >> 32); }
 /* a times b Q30, rounded */
 inline int32_t m30(int32_t a, int32_t b) { return (int32_t)(((int64_t)a * b + (1 << 29)) >> 30); }
 inline int32_t clip16(int32_t x) { return x < -32768 ? -32768 : x > 32767 ? 32767 : x; }
@@ -22,10 +22,25 @@ inline int32_t clip16(int32_t x) { return x < -32768 ? -32768 : x > 32767 ? 3276
 inline int32_t trunc_shift(int64_t x, int shift) { return x < 0 ? -(int32_t)((-x) >> shift) : (int32_t)(x >> shift); }
 inline int32_t knob_q30(uint32_t k) { return (int32_t)(k << 14); }
 
+/* stmlib's SoftLimit, Q24 (fom_rings.cc's, inline here: four a sample) */
+inline int32_t soft_limit(int32_t x)
+{
+    int32_t ax = x < 0 ? (x == (int32_t)0x80000000u ? 0x7FFFFFFF : -x) : x;
+    uint32_t gain;
+    if (ax < (4 << 24)) {
+        uint32_t i = (uint32_t)ax >> 18, f = ((uint32_t)ax >> 2) & 0xFFFFu;
+        uint32_t a = kSoftLimitGainQ16[i], b = kSoftLimitGainQ16[i + 1];
+        gain = a - (uint32_t)(((uint64_t)(a - b) * f) >> 16);
+    } else {
+        return SoftLimitQ24(x);
+    }
+    int32_t y = (int32_t)(((int64_t)ax * gain) >> 16);
+    return x < 0 ? -y : y;
+}
+
 const int32_t kQ30 = 1 << 30;
 const int32_t k0_0005 = 536871;           /* 0.0005, Q30 */
 const int32_t k0_01 = 10737418;           /* 0.01 */
-const int32_t k0_1 = 107374182;           /* 0.1 */
 const int32_t k0_2 = 214748365;           /* 0.2 */
 const int32_t k0_625 = 671088640;         /* 0.625, the diffuser's allpasses */
 const int32_t k0_7 = 751619277;           /* 0.7, the reverb's diffusion */
@@ -35,27 +50,7 @@ const int32_t k0_54 = 579820585;          /* 0.54 */
 const int32_t k0_35 = 375809638;          /* 0.35 */
 const int32_t k0_63 = 676457349;          /* 0.63 */
 const int32_t k0_6 = 644245094;           /* 0.6 */
-const int32_t k0_37 = 397284475;          /* 0.37 */
-
-/* AudioBuffer<16 bit>::ReadHermite (Laurent de Soras's), from sample i - 1 (the point between i + 1 and i + 2), Q24.
- * Doubled (no halves lost), in Q11 between the multiplies. */
-inline int32_t read_hermite(const int16_t* s, int32_t i, uint32_t frac)
-{
-    int32_t xm1 = s[i], x0 = s[i + 1], x1 = s[i + 2], x2 = s[i + 3];
-    int32_t c = x1 - xm1, v = 2 * (x0 - x1), w = c + v, a = w + v + (x2 - x0), b = w + a;
-    int32_t t = (int32_t)(frac << 15);                                 /* Q31 */
-    int32_t y = mulhi(a << 12, t) - (b << 11);
-    y = (mulhi(y, t) << 1) + (c << 11);
-    y = (mulhi(y, t) << 1) + (x0 << 12);
-    return y >> 3;
-}
-
-inline int32_t read_linear(const int16_t* s, int32_t i, uint32_t frac)
-{
-    int32_t x0 = s[i], x1 = s[i + 1];
-    return (x0 << 9) + (((x1 - x0) * (int32_t)(frac >> 1)) >> 6);
-}
-
+const int32_t k0_37 = 397284475;          
 /* the FxEngines' delay lines: lengths as Clouds reserves them; each starts one past the previous one's end */
 const int32_t kDiffuserLength[8] = { 126, 180, 269, 444, 151, 205, 245, 405 };
 const int32_t kReverbLength[10] = { 113, 162, 241, 399, 1653, 2038, 3411, 1913, 1663, 4782 };
@@ -65,20 +60,38 @@ const int32_t kReverbBase[10] = { 0, 114, 277, 519, 919, 2573, 4612, 8024, 9938,
 
 /* the reverb's 12-bit format: value * 4096 in 16 bits */
 inline int32_t dec12(uint16_t v) { return (int32_t)(int16_t)v << 12; }
-inline uint16_t comp12(int32_t acc) { return (uint16_t)(int16_t)clip16(trunc_shift(acc, 12)); }
+inline uint16_t comp12(int32_t acc)                  /* (int32_t)(x * 4096) towards zero, Clip16 */
+{
+    int32_t v = (acc + ((acc >> 31) & 4095)) >> 12;
+    return (uint16_t)(int16_t)(v < -32768 ? -32768 : v > 32767 ? 32767 : v);
+}
+/* a times b Q30, truncated (the reverb's and the diffuser's many products: 2^-24 under their 12-bit memory) */
+inline int32_t mt30(int32_t a, int32_t b) { return (int32_t)(((int64_t)a * (int64_t)b) >> 30); }
 
 /* ---- float32, emulated: a grain's start, length and rate are computed in float on Clouds, and truncated to
  * integers (a sample, a 1/65536 step), so the port rounds as float32 does there. A few hundred times a second. */
 
 typedef CloudsFloat F;
 
+inline int32_t top_bit(uint64_t a)        /* the highest bit set (a > 0), by halves */
+{
+    int32_t m = 0;
+    uint32_t y;
+    if (a >> 32) { y = (uint32_t)(a >> 32); m = 32; } else y = (uint32_t)a;
+    if (y >> 16) { y >>= 16; m += 16; }
+    if (y >> 8) { y >>= 8; m += 8; }
+    if (y >> 4) { y >>= 4; m += 4; }
+    if (y >> 2) { y >>= 2; m += 2; }
+    if (y >> 1) m += 1;
+    return m;
+}
+
 F fround(int64_t m, int32_t e)            /* to 24 significant bits, ties to even */
 {
     if (!m) { F z = { 0, 0 }; return z; }
     bool neg = m < 0;
     uint64_t a = neg ? (uint64_t)-m : (uint64_t)m;
-    int32_t top = 0;
-    while (top < 63 && (a >> (top + 1))) ++top;
+    int32_t top = top_bit(a);
     if (top < 23) { a <<= 23 - top; e -= 23 - top; }  /* (normalized: the mantissa in [2^23, 2^24)) */
     if (top > 23) {
         int32_t sh = top - 23;
@@ -144,8 +157,7 @@ F rsqrt_carmack(F x)
 /* v (positive) rounded to 24 significant bits, ties to even */
 uint64_t round24(uint64_t v)
 {
-    int32_t t = 0;
-    while (t < 63 && (v >> (t + 1))) ++t;               /* (a shift by 64 is undefined) */
+    int32_t t = top_bit(v);
     if (t <= 23) return v;
     uint64_t u = (uint64_t)1 << (t - 23), r = v & (u - 1), q = v - r;
     if (r > (u >> 1) || (r == (u >> 1) && (q & u))) q += u;
@@ -229,68 +241,137 @@ void CloudsGrain::Start(int32_t pre_delay, int32_t buffer_size, int32_t start, i
     active_ = true;
 }
 
-void CloudsGrain::OverlapAdd(const int16_t* bl, const int16_t* br, int32_t buffer_size, int32_t* out, int32_t n)
+/* A grain's block: its envelope every 4 samples (the window is 1024 samples at least: a straight line between is
+ * within 1e-4 of it), the samples in between on the line; summed in 64 bits (Q18 samples, int16 * 8, times Q30
+ * gains: Q48). One gain of the pan is 1 (Clouds' louder side), so three gains a sample: g1 the louder side's own
+ * channel, g2 the quieter side's channel into it, g3 the quieter side's own. */
+enum { kEnvSlope, kEnvWindow, kEnvTriangle };
+/* exact: the phase never has a fraction (PITCH 0 or whole octaves): what Hermite gives at t = 0 (sample i + 1), or
+ * linear (sample i) */
+enum { kReadHermite, kReadLinear, kReadExact, kReadExactLinear };
+
+inline int32_t mul(int32_t a, int32_t b, int shift) { return (int32_t)(((int64_t)a * (int64_t)b) >> shift); }
+
+template <int kEnv>
+inline int32_t envelope_at(uint32_t ph, int32_t shape)    /* Grain::RenderEnvelope's gain at phase ph, Q30 */
+{
+    int32_t gain = ph < (1u << 30) ? (int32_t)ph : (int32_t)((1u << 31) - ph);
+    if (gain < 0) gain = 0;
+    if (kEnv == kEnvWindow) {                               /* triangle -> window: lut_window, nearest of 4096 */
+        gain += mul(((int32_t)kCloudsWindowQ16[(uint32_t)gain >> 18] << 14) - gain, shape, 30);
+    } else if (kEnv == kEnvSlope) {                         /* triangle * slope, to 1 */
+        int64_t g = ((int64_t)gain * shape) >> 16;
+        gain = g >= kQ30 ? kQ30 : (int32_t)g;
+    }
+    return gain;
+}
+
+template <int kRead, int kEnv, bool kLeft>
+static void grain_render(const int16_t* buf, int32_t size, int64_t* acc, int32_t m, uint32_t ph,
+                         uint32_t env_inc, int32_t shape, int32_t pan_gain, int32_t pan_cross, int32_t phase,
+                         int32_t phase_inc, int32_t first)
+{
+    int32_t e0 = envelope_at<kEnv>(ph, shape);
+    for (int32_t k0 = 0; k0 < m; k0 += 4) {
+        ph += 4 * env_inc;
+        int32_t e1 = envelope_at<kEnv>(ph, shape);
+        int32_t g1 = e0, g2 = mul(e0, pan_cross, 30), g3 = mul(e0, pan_gain, 30);
+        int32_t d1 = (e1 - e0) >> 2, d2 = (mul(e1, pan_cross, 30) - g2) >> 2, d3 = (mul(e1, pan_gain, 30) - g3) >> 2;
+        int32_t cnt = m - k0 < 4 ? m - k0 : 4;
+        for (int32_t k = 0; k < cnt; ++k) {
+            int32_t index = first + (phase >> 16);
+            if (index >= size) index -= size;
+            int32_t t = phase & 0xFFFF, l, r;
+            const int16_t* s = buf + 2 * index;             /* (L R interleaved) */
+            if (kRead == kReadExact) {
+                l = s[2] << 3;
+                r = s[3] << 3;
+            } else if (kRead == kReadExactLinear) {
+                l = s[0] << 3;
+                r = s[1] << 3;
+            } else if (kRead == kReadHermite) {             /* AudioBuffer::ReadHermite (Laurent de Soras's) */
+                int32_t c = s[4] - s[0], v = 2 * (s[2] - s[4]), w = c + v, a = w + v + (s[6] - s[2]), bn = w + a;
+                int32_t y = (int32_t)(((int64_t)(a << 2) * t) >> 16) - (bn << 2);
+                y = (int32_t)(((int64_t)y * t) >> 16) + (c << 2);
+                l = (int32_t)(((int64_t)y * t) >> 16) + (s[2] << 3);
+                c = s[5] - s[1]; v = 2 * (s[3] - s[5]); w = c + v; a = w + v + (s[7] - s[3]); bn = w + a;
+                y = (int32_t)(((int64_t)(a << 2) * t) >> 16) - (bn << 2);
+                y = (int32_t)(((int64_t)y * t) >> 16) + (c << 2);
+                r = (int32_t)(((int64_t)y * t) >> 16) + (s[3] << 3);
+            } else {
+                int32_t th = t >> 1;
+                l = (s[0] << 3) + (((s[2] - s[0]) * th) >> 12);
+                r = (s[1] << 3) + (((s[3] - s[1]) * th) >> 12);
+            }
+            if (kLeft) {                                    /* L = l + r (1 - gain_r), R = r gain_r */
+                acc[0] += (int64_t)l * g1 + (int64_t)r * g2;
+                acc[1] += (int64_t)r * g3;
+            } else {                                        /* L = l gain_l, R = r + l (1 - gain_l) */
+                acc[0] += (int64_t)l * g3;
+                acc[1] += (int64_t)r * g1 + (int64_t)l * g2;
+            }
+            acc += 2;
+            phase += phase_inc;
+            g1 += d1; g2 += d2; g3 += d3;
+        }
+        e0 = e1;
+    }
+}
+
+void CloudsGrain::OverlapAdd(const int16_t* buf, int32_t buffer_size, int64_t* acc, int32_t n)
 {
     if (!active_) return;
     int32_t k = 0;
     while (pre_delay_ && k < n) { ++k; --pre_delay_; }
-    uint32_t ph = env_phase_;
-    const uint32_t inc = env_increment_;
-    int32_t phase = phase_;
-    out += 2 * k;
-    for (; k < n; ++k) {
-        /* the envelope: a triangle, through the smooth window or a slope */
-        if (!remaining_) {
-#ifdef FOM_CLOUDS_DEBUG
-            std::fprintf(stderr, "E %d %d\n", (int)(n - k - 1), (int)first_sample_);
-#endif
-            active_ = false; break; }     /* (the step that reaches 2.0, in float32) */
-        --remaining_;
-        int32_t gain = (int32_t)(ph >= (1u << 31) ? 0 : ph >= (1u << 30) ? (1u << 31) - ph : ph);
-        if (smoothness_) {
-            if (high_) {
-                uint32_t i = (uint32_t)gain >> 18, f = (uint32_t)gain & 0x3FFFFu;
-                int32_t w = kCloudsWindowQ16[i];
-                if (i < 4096) w += (int32_t)(((int64_t)((int32_t)kCloudsWindowQ16[i + 1] - w) * f) >> 18);
-                gain += m30(smoothness_, (w << 14) - gain);
-            }
-        } else {
-            int64_t g = ((int64_t)gain * slope_) >> 16;
-            gain = g >= kQ30 ? kQ30 : (int32_t)g;
-        }
-        ph += inc;
-        /* the sample */
-        int32_t index = first_sample_ + (phase >> 16);
-        if (index >= buffer_size) index -= buffer_size;
-        uint32_t frac = (uint32_t)phase & 0xFFFFu;
-        int32_t l, r;
-        if (high_) { l = read_hermite(bl, index, frac); r = read_hermite(br, index, frac); }
-        else { l = read_linear(bl, index, frac); r = read_linear(br, index, frac); }
-        l = mulhi(l << 2, gain) << 2;                       /* Q24, times 4 for the gains' mulhi */
-        r = mulhi(r << 2, gain) << 2;
-        out[0] += mulhi(l, gain_l_) + mulhi(r, cross_r_);
-        out[1] += mulhi(r, gain_r_) + mulhi(l, cross_l_);
-        out += 2;
-        phase += phase_increment_;
+    acc += 2 * k;
+    n -= k;
+    if (!n) return;
+    /* the samples this block: up to the step that reaches 2.0 (in float32) */
+    int32_t m = (uint32_t)n < remaining_ ? n : (int32_t)remaining_;
+    bool left = gain_l_ == kQ30;
+    int32_t pg = left ? gain_r_ : gain_l_, pc = left ? cross_r_ : cross_l_;
+    int32_t env = !smoothness_ ? kEnvSlope : high_ ? kEnvWindow : kEnvTriangle;
+    int32_t shape = env == kEnvSlope ? (int32_t)slope_ : smoothness_;
+    bool exact = !((phase_ | phase_increment_) & 0xFFFF);
+    int32_t read = high_ ? (exact ? kReadExact : kReadHermite) : (exact ? kReadExactLinear : kReadLinear);
+#define FOM_R(rd, e) (left ? grain_render<rd, e, true>(buf, buffer_size, acc, m, env_phase_, env_increment_, shape, \
+                                                    pg, pc, phase_, phase_increment_, first_sample_) \
+                           : grain_render<rd, e, false>(buf, buffer_size, acc, m, env_phase_, env_increment_, shape, \
+                                                     pg, pc, phase_, phase_increment_, first_sample_))
+    if (read == kReadExact) { if (env == kEnvWindow) FOM_R(kReadExact, kEnvWindow); else FOM_R(kReadExact, kEnvSlope); }
+    else if (read == kReadHermite) {
+        if (env == kEnvWindow) FOM_R(kReadHermite, kEnvWindow); else FOM_R(kReadHermite, kEnvSlope);
+    } else if (read == kReadExactLinear) {
+        if (env == kEnvTriangle) FOM_R(kReadExactLinear, kEnvTriangle); else FOM_R(kReadExactLinear, kEnvSlope);
+    } else {
+        if (env == kEnvTriangle) FOM_R(kReadLinear, kEnvTriangle); else FOM_R(kReadLinear, kEnvSlope);
     }
-    env_phase_ = ph;
-    phase_ = phase;
+#undef FOM_R
+    remaining_ -= (uint32_t)m;
+    env_phase_ += (uint32_t)m * env_increment_;
+    phase_ += m * phase_increment_;
+    if (m < n) {
+#ifdef FOM_CLOUDS_DEBUG
+        std::fprintf(stderr, "E %d %d\n", (int)(n - m - 1), (int)first_sample_);
+#endif
+        active_ = false;
+    }
 }
 
 /* ==== the processor =============================================================================================== */
 
-void Clouds::Init(int16_t* buffer_l, int16_t* buffer_r, int32_t* diffuser, uint16_t* reverb)
+void Clouds::Init(int16_t* buffer, int32_t* diffuser, uint16_t* reverb)
 {
-    buf_[0] = buffer_l;
-    buf_[1] = buffer_r;
+    buf_ = buffer;
     diffuser_ = diffuser;
     reverb_ = reverb;
-    for (int32_t i = 0; i < kCloudsBufferSamples; ++i) buf_[0][i] = buf_[1][i] = 0;
+    for (int32_t i = 0; i < 2 * kCloudsBufferSamples; ++i) buf_[i] = 0;
     for (int32_t i = 0; i < kCloudsDiffuserSize; ++i) diffuser_[i] = 0;
     for (int32_t i = 0; i < kCloudsReverbSize; ++i) reverb_[i] = 0;
     for (int32_t i = 0; i < 256; ++i) tail_[0][i] = tail_[1][i] = 0;
     write_head_ = crossfade_counter_ = 0;
     for (int32_t i = 0; i < kCloudsMaxGrains; ++i) grains_[i].Init();
+    max_grains_ = kCloudsMaxGrains;
     num_grains_.m = 0; num_grains_.e = 0;
     gain_normalization_ = 1 << 29;
     hint_.m = 1 << 23; hint_.e = -13;                       /* 1024.0f */
@@ -302,10 +383,11 @@ void Clouds::Init(int16_t* buffer_l, int16_t* buffer_r, int32_t* diffuser, uint1
     for (int32_t c = 0; c < 2; ++c) fb_s1_[c] = fb_s2_[c] = lp_decay_[c] = 0;
     for (int32_t i = 0; i < kCloudsBlock * 2; ++i) fb_[i] = in_[i] = out_[i] = 0;
     diffuser_wp_ = reverb_wp_ = 0;
+    diffuser_rest_ = reverb_rest_ = false;
     for (int32_t i = 0; i < 2; ++i) {                       /* CosineOscillator::Start: y1 = c / 4, y0 = 1 / 2 */
         lfo_y1_[i] = (int64_t)kCloudsReverbLfoQ29[i] << 17;
         lfo_y0_[i] = (int64_t)1 << 47;
-        lfo_value_[i] = 0;
+        lfo_value_[i] = ReverbLfo(i, false);                /* value() until the first step */
     }
 }
 
@@ -322,8 +404,8 @@ void Clouds::WriteBuffer(const int32_t* in, int32_t n, bool write)
         }
     } else if (!crossfade_counter_ && write_head_ >= 8 && write_head_ < size - n) {
         for (int32_t i = 0; i < n; ++i) {                   /* the common case: * 32767 */
-            buf_[0][write_head_] = (int16_t)clip16(trunc_shift((int64_t)in[2 * i] * 32767, 24));
-            buf_[1][write_head_] = (int16_t)clip16(trunc_shift((int64_t)in[2 * i + 1] * 32767, 24));
+            buf_[2 * write_head_] = (int16_t)clip16(trunc_shift((int64_t)in[2 * i] * 32767, 24));
+            buf_[2 * write_head_ + 1] = (int16_t)clip16(trunc_shift((int64_t)in[2 * i + 1] * 32767, 24));
             ++write_head_;
         }
     } else {
@@ -338,8 +420,8 @@ void Clouds::WriteBuffer(const int32_t* in, int32_t n, bool write)
                 int32_t sample = in[2 * i + c];
                 if (gain) sample += m30(((int32_t)tail_[c][t < 256 ? t : 255] << 9) - sample, gain);
                 int16_t v = (int16_t)clip16(trunc_shift(sample, 9));
-                buf_[c][write_head_] = v;
-                if (write_head_ < 8) buf_[c][write_head_ + size] = v;
+                buf_[2 * write_head_ + c] = v;
+                if (write_head_ < 8) buf_[2 * (write_head_ + size) + c] = v;
             }
             if (++write_head_ >= size) write_head_ = 0;
         }
@@ -357,14 +439,14 @@ void Clouds::Play(const CloudsPatch& p, int32_t n)
     bool deterministic = p.density < 32768u;
     if (!fless(dens, c053)) ov = fmul(fadd(dens, fneg(c053)), c212);
     else if (!fless(c047, dens)) ov = fmul(fadd(c047, fneg(dens)), c212);
-    int32_t overlap = fq30(ov);
     /* TEXTURE: the window */
     const F c1333 = { 11182014, -23 }, c075 = { 12582912, -24 };
     F tex = fround(p.texture, -16), ws = { 8388608, -23 };
     if (fless(tex, c075)) ws = fmul(tex, c1333);
     uint32_t window_shape = (uint32_t)fq30(ws);
 
-    F target = fmul(fint(kCloudsMaxGrains), fmul(fmul(ov, ov), ov));
+    const int32_t max = max_grains_;
+    F target = fmul(fint(max), fmul(fmul(ov, ov), ov));
     /* GetFloat() < p, p = target / hint: the word (as float) under ceil(p 2^32); phasor >= space = hint / target:
      * the phasor (an integer) at ceil(space) */
     uint64_t prob_ceil = 0, space_ceil = (uint64_t)1 << 40;
@@ -377,20 +459,27 @@ void Clouds::Play(const CloudsPatch& p, int32_t n)
     if (deterministic) prob_ceil = 0; else grain_rate_phasor_ = -1000;
     bool below_target = fless(num_grains_, target);
 
-    int32_t available[kCloudsMaxGrains], num_available = 0;
-    for (int32_t i = 0; i < kCloudsMaxGrains; ++i)
-        if (!grains_[i].active()) available[num_available++] = i;
+    int32_t available[kCloudsMaxGrains], num_available = 0, active_above = 0;
+    for (int32_t i = 0; i < kCloudsMaxGrains; ++i) {
+        if (i >= max) active_above += grains_[i].active();  /* (still sounding from before a lower limit) */
+        else if (!grains_[i].active()) available[num_available++] = i;
+    }
 
     for (int32_t t = 0; t < n; ++t) {
         ++grain_rate_phasor_;
         rng_ = rng_ * 1664525u + 1013904223u;
         /* Random::GetFloat() < p (the word rounded to float), while fewer grains than the target sound */
-        bool seed = (uint64_t)FloatGridSigned(rng_) < prob_ceil && below_target;
+        bool seed = false;
+        if (prob_ceil && below_target) {                    /* (the float rounding moves the word by under 2^8) */
+            uint64_t w = rng_;
+            seed = w + 256u < prob_ceil ? true : w >= prob_ceil + 256u ? false
+                 : (uint64_t)FloatGridSigned((int64_t)w) < prob_ceil;
+        }
         if (grain_rate_phasor_ >= 0 && (uint64_t)grain_rate_phasor_ >= space_ceil) seed = true;
         if (!num_available || !seed) continue;
         --num_available;
         CloudsGrain* g = &grains_[available[num_available]];
-        bool high = num_available >= 3 * kCloudsMaxGrains / 4;
+        bool high = num_available >= 3 * max / 4;
         /* ScheduleGrain, in float32's arithmetic */
         uint32_t si = p.size >> 8, sf = p.size & 0xFFu;
         F gs = fround(((int64_t)kCloudsGrainSize[si] << 8) +
@@ -423,11 +512,11 @@ void Clouds::Play(const CloudsPatch& p, int32_t n)
         grain_rate_phasor_ = 0;
     }
 
-    for (int32_t i = 0; i < n * 2; ++i) out_[i] = 0;
-    for (int32_t i = 0; i < kCloudsMaxGrains; ++i) grains_[i].OverlapAdd(buf_[0], buf_[1], size, out_, n);
+    for (int32_t i = 0; i < n * 2; ++i) acc_[i] = 0;
+    for (int32_t i = 0; i < kCloudsMaxGrains; ++i) grains_[i].OverlapAdd(buf_, size, acc_, n);
 
     /* the gain: 1 / sqrt(grains - 1), more with the overlap for the narrower windows */
-    F active = fint(kCloudsMaxGrains - num_available);
+    F active = fint(max - num_available + active_above);
     F err = fadd(active, fneg(num_grains_));
     const F c09 = { 15099494, -24 }, c02 = { 13421773, -26 }, one = { 8388608, -23 }, two = { 8388608, -22 };
     num_grains_ = fadd(num_grains_, fmul(err.m > 0 ? c09 : c02, err));
@@ -439,8 +528,8 @@ void Clouds::Play(const CloudsPatch& p, int32_t n)
     int32_t gain = fq30(gain_f) >> 1;                                             /* Q29 */
     for (int32_t t = 0; t < n; ++t) {
         gain_normalization_ += (int32_t)(((int64_t)(gain - gain_normalization_) * k0_01) >> 30);
-        out_[2 * t] = (int32_t)(((int64_t)out_[2 * t] * gain_normalization_) >> 29);
-        out_[2 * t + 1] = (int32_t)(((int64_t)out_[2 * t + 1] * gain_normalization_) >> 29);
+        out_[2 * t] = (int32_t)(((acc_[2 * t] >> 24) * gain_normalization_) >> 29);     /* Q48 -> Q24 */
+        out_[2 * t + 1] = (int32_t)(((acc_[2 * t + 1] >> 24) * gain_normalization_) >> 29);
     }
 }
 
@@ -450,20 +539,18 @@ void Clouds::Diffuse(int32_t amount, int32_t n)
     const int32_t mask = kCloudsDiffuserSize - 1;
     int32_t* buf = diffuser_;
     int32_t wp = diffuser_wp_;
+#define FOM_AP(k) { int32_t r_ = buf[(wp + kDiffuserBase[k] + kDiffuserLength[k] - 1) & mask]; \
+                    acc += mt30(r_, k0_625); buf[(wp + kDiffuserBase[k]) & mask] = acc; acc = mt30(acc, -k0_625) + r_; }
     for (int32_t t = 0; t < n; ++t) {
         wp = (wp - 1) & mask;
-        for (int32_t c = 0; c < 2; ++c) {
-            int32_t acc = out_[2 * t + c];
-            for (int32_t k = 4 * c; k < 4 * c + 4; ++k) {
-                int32_t base = kDiffuserBase[k];
-                int32_t r = buf[(wp + base + kDiffuserLength[k] - 1) & mask];
-                acc += m30(r, k0_625);
-                buf[(wp + base) & mask] = acc;
-                acc = m30(acc, -k0_625) + r;
-            }
-            out_[2 * t + c] += m30(acc - out_[2 * t + c], amount);
-        }
+        int32_t acc = out_[2 * t];
+        FOM_AP(0) FOM_AP(1) FOM_AP(2) FOM_AP(3)
+        out_[2 * t] += m30(acc - out_[2 * t], amount);
+        acc = out_[2 * t + 1];
+        FOM_AP(4) FOM_AP(5) FOM_AP(6) FOM_AP(7)
+        out_[2 * t + 1] += m30(acc - out_[2 * t + 1], amount);
     }
+#undef FOM_AP
     diffuser_wp_ = wp;
 }
 
@@ -493,43 +580,41 @@ void Clouds::Reverb(int32_t amount, int32_t krt, int32_t klp, int32_t n)
 #define HEAD(k) buf[(wp + base[k]) & mask]
     for (int32_t t = 0; t < n; ++t) {
         wp = (wp - 1) & mask;
-        bool next = (wp & 31) == 0;
-        lfo_value_[0] = ReverbLfo(0, next);
-        lfo_value_[1] = ReverbLfo(1, next);
+        if ((wp & 31) == 0) {                               /* the LFOs step every 32 samples (FxEngine::Start) */
+            lfo_value_[0] = ReverbLfo(0, true);
+            lfo_value_[1] = ReverbLfo(1, true);
+        }
         int32_t* io = &out_[2 * t];
         /* smear AP1 inside the loop: Interpolate(ap1, 10 + 60 lfo1), written back 100 samples in */
         int64_t off = ((int64_t)10 << 30) + (int64_t)60 * lfo_value_[0];
         int32_t oi = (int32_t)(off >> 30), of = (int32_t)(off & (kQ30 - 1));
         int32_t a = dec12(buf[(wp + oi + base[0]) & mask]), b = dec12(buf[(wp + oi + base[0] + 1) & mask]);
-        int32_t acc = a + m30(b - a, of);
+        int32_t acc = a + mt30(b - a, of);
         buf[(wp + base[0] + 100) & mask] = comp12(acc);
-        acc = m30(io[0] + io[1], gain);
-        for (int32_t k = 0; k < 4; ++k) {                   /* diffuse */
-            int32_t r = dec12(TAIL(k));
-            acc += m30(r, kap);
-            HEAD(k) = comp12(acc);
-            acc = m30(acc, -kap) + r;
-        }
+        acc = mt30(io[0] + io[1], gain);
+#define FOM_AP(k) { int32_t r_ = dec12(TAIL(k)); acc += mt30(r_, kap); HEAD(k) = comp12(acc); acc = mt30(acc, -kap) + r_; }
+        FOM_AP(0) FOM_AP(1) FOM_AP(2) FOM_AP(3)             /* diffuse */
+#undef FOM_AP
         int32_t apout = acc;
         /* the loop, left */
         acc = apout;
         off = ((int64_t)4680 << 30) + (int64_t)100 * lfo_value_[1];
         oi = (int32_t)(off >> 30); of = (int32_t)(off & (kQ30 - 1));
         a = dec12(buf[(wp + oi + base[9]) & mask]); b = dec12(buf[(wp + oi + base[9] + 1) & mask]);
-        acc += m30(a + m30(b - a, of), krt);
-        lp1 += m30(acc - lp1, klp); acc = lp1;
-        int32_t r = dec12(TAIL(4)); acc += m30(r, -kap); HEAD(4) = comp12(acc); acc = m30(acc, kap) + r;
-        r = dec12(TAIL(5)); acc += m30(r, kap); HEAD(5) = comp12(acc); acc = m30(acc, -kap) + r;
+        acc += mt30(a + mt30(b - a, of), krt);
+        lp1 += mt30(acc - lp1, klp); acc = lp1;
+        int32_t r = dec12(TAIL(4)); acc += mt30(r, -kap); HEAD(4) = comp12(acc); acc = mt30(acc, kap) + r;
+        r = dec12(TAIL(5)); acc += mt30(r, kap); HEAD(5) = comp12(acc); acc = mt30(acc, -kap) + r;
         HEAD(6) = comp12(acc); acc *= 2;
-        io[0] += m30(acc - io[0], amount);
+        io[0] += mt30(acc - io[0], amount);
         /* the loop, right */
         acc = apout;
-        acc += m30(dec12(TAIL(6)), krt);
-        lp2 += m30(acc - lp2, klp); acc = lp2;
-        r = dec12(TAIL(7)); acc += m30(r, kap); HEAD(7) = comp12(acc); acc = m30(acc, -kap) + r;
-        r = dec12(TAIL(8)); acc += m30(r, -kap); HEAD(8) = comp12(acc); acc = m30(acc, kap) + r;
+        acc += mt30(dec12(TAIL(6)), krt);
+        lp2 += mt30(acc - lp2, klp); acc = lp2;
+        r = dec12(TAIL(7)); acc += mt30(r, kap); HEAD(7) = comp12(acc); acc = mt30(acc, -kap) + r;
+        r = dec12(TAIL(8)); acc += mt30(r, -kap); HEAD(8) = comp12(acc); acc = mt30(acc, kap) + r;
         HEAD(9) = comp12(acc); acc *= 2;
-        io[1] += m30(acc - io[1], amount);
+        io[1] += mt30(acc - io[1], amount);
     }
 #undef TAIL
 #undef HEAD
@@ -559,7 +644,8 @@ void Clouds::Run(const CloudsPatch& p, const int32_t* in, int32_t n)
         fb_h_ = (int32_t)Udiv64((uint64_t)1 << 60, (uint32_t)(kQ30 + g30 + (int32_t)(((int64_t)g30 * g30) >> 30)));
     }
     const int32_t g = fb_g_, h = fb_h_;
-    for (int32_t c = 0; c < 2; ++c) {
+    /* (with FEEDBACK at 0 nothing is fed back: the filter rests, its state as it was, until FEEDBACK comes up) */
+    for (int32_t c = 0; c < 2 && p.feedback; ++c) {
         int32_t s1 = fb_s1_[c], s2 = fb_s2_[c];
         for (int32_t t = 0; t < n; ++t) {
             int32_t x = fb_[2 * t + c];
@@ -580,14 +666,20 @@ void Clouds::Run(const CloudsPatch& p, const int32_t* in, int32_t n)
     if (fb_gain) {
         int32_t k = m30(fb_gain, k1_4);
         for (int32_t i = 0; i < 2 * n; ++i)
-            in_[i] += m30(fb_gain, SoftLimitQ24(m30(fb_[i], k) + in_[i]) - in_[i]);
+            in_[i] += m30(fb_gain, soft_limit(m30(fb_[i], k) + in_[i]) - in_[i]);
     }
 
     WriteBuffer(in_, n, !p.freeze);
     Play(p, n);
 
     int32_t texture = knob_q30(p.texture);
-    Diffuse(texture > 3 * (kQ30 / 4) ? (texture - 3 * (kQ30 / 4)) * 4 : 0, n);
+    /* The diffuser and the reverb rest while they would leave the sound as it is (TEXTURE under 3/4, no reverb): the
+     * CPU goes to the grains. They start again from silence (Clouds' would hold the last 64 ms, or a tail). */
+    int32_t diffusion = texture > 3 * (kQ30 / 4) ? (texture - 3 * (kQ30 / 4)) * 4 : 0;
+    if (diffusion) {
+        if (diffuser_rest_) { for (int32_t i = 0; i < kCloudsDiffuserSize; ++i) diffuser_[i] = 0; diffuser_rest_ = false; }
+        Diffuse(diffusion, n);
+    } else diffuser_rest_ = true;
 
     for (int32_t i = 0; i < 2 * n; ++i) fb_[i] = out_[i];    /* what is fed back: not the reverb */
 
@@ -595,7 +687,19 @@ void Clouds::Run(const CloudsPatch& p, const int32_t* in, int32_t n)
     ra += m30((int32_t)(((int64_t)feedback * ((int64_t)2 * kQ30 - feedback)) >> 30), freeze_lp_);   /* fb (2 - fb) */
     if (ra < 0) ra = 0;
     if (ra > kQ30) ra = kQ30;
-    Reverb(m30(ra, k0_54), k0_35 + m30(k0_63, ra), k0_6 + m30(k0_37, feedback), n);
+    if (ra) {
+        if (reverb_rest_) {
+            for (int32_t i = 0; i < kCloudsReverbSize; ++i) reverb_[i] = 0;
+            lp_decay_[0] = lp_decay_[1] = 0;
+            reverb_rest_ = false;
+        }
+        Reverb(m30(ra, k0_54), k0_35 + m30(k0_63, ra), k0_6 + m30(k0_37, feedback), n);
+    } else reverb_rest_ = true;
+}
+
+void Clouds::set_max_grains(int32_t n)
+{
+    max_grains_ = n < 4 ? 4 : n > kCloudsMaxGrains ? kCloudsMaxGrains : n;
 }
 
 void Clouds::Process(const CloudsPatch& p, const int32_t* in, int32_t* wet, int32_t n)
@@ -610,8 +714,8 @@ void Clouds::Process(const CloudsPatch& p, const int32_t* in, int32_t* wet, int3
         int32_t fi = kCloudsXfadeInQ30[i];
         if (i < 16) fi += (int32_t)(((int64_t)(kCloudsXfadeInQ30[i + 1] - fi) * f) >> 26);
         int32_t k = m30(fi, k0_6);                                    /* 1.2 / 2: post gain, SoftConvert's half */
-        wet[2 * t] = SoftLimitQ24(m30(out_[2 * t], k));
-        wet[2 * t + 1] = SoftLimitQ24(m30(out_[2 * t + 1], k));
+        wet[2 * t] = soft_limit(m30(out_[2 * t], k));
+        wet[2 * t + 1] = soft_limit(m30(out_[2 * t + 1], k));
     }
     dry_wet_ = dw;
 }
@@ -635,7 +739,7 @@ void Clouds::ProcessShort(const CloudsPatch& p, const int16_t* input, int16_t* o
         int32_t k = m30(fi, 1288490189);                              /* 1.2 fade_in */
         for (int32_t c = 0; c < 2; ++c) {
             int32_t x = m30(in[2 * t + c], fo) + m30(out_[2 * t + c], k);
-            output[2 * t + c] = (int16_t)clip16(trunc_shift(SoftLimitQ24(x >> 1), 9));
+            output[2 * t + c] = (int16_t)clip16(trunc_shift(soft_limit(x >> 1), 9));
         }
     }
     dry_wet_ = dw;
@@ -643,11 +747,10 @@ void Clouds::ProcessShort(const CloudsPatch& p, const int16_t* input, int16_t* o
 
 /* ==== at 44.1 kHz ================================================================================================= */
 
-void CloudsFx::Init(int16_t* buffer_l, int16_t* buffer_r, int32_t* diffuser, uint16_t* reverb)
+void CloudsFx::Init(int16_t* buffer, int32_t* diffuser, uint16_t* reverb)
 {
-    clouds_.Init(buffer_l, buffer_r, diffuser, reverb);
-    for (int32_t c = 0; c < 2; ++c)
-        for (int32_t i = 0; i < 32; ++i) { down_hist_[c][i] = 0; up_hist_[c][i] = 0; }
+    clouds_.Init(buffer, diffuser, reverb);
+    for (int32_t i = 0; i < 64; ++i) { down_hist_[i] = 0; up_hist_[i] = 0; }
     down_pos_ = down_phase_ = up_pos_ = up_phase_ = 0;
     down_count_ = 1;
     block_fill_ = 0;
@@ -657,31 +760,34 @@ void CloudsFx::Init(int16_t* buffer_l, int16_t* buffer_r, int32_t* diffuser, uin
     fade_out_ = kQ30;
 }
 
+/* 16 taps on a stereo history (L R interleaved, x at the newest frame, older ones before it): both channels, Q30 */
+#define FOM_TAP(k) c = h[k]; al += (int64_t)c * x[-2 * (k)]; ar += (int64_t)c * x[1 - 2 * (k)];   /* (the chip's 64-bit MAC) */
+#define FOM_FIR16 FOM_TAP(0) FOM_TAP(1) FOM_TAP(2) FOM_TAP(3) FOM_TAP(4) FOM_TAP(5) FOM_TAP(6) FOM_TAP(7) \
+                  FOM_TAP(8) FOM_TAP(9) FOM_TAP(10) FOM_TAP(11) FOM_TAP(12) FOM_TAP(13) FOM_TAP(14) FOM_TAP(15)
+static_assert(kCloudsSrcTaps == 16, "the resamplers' loops are written for 16 taps");
+
 void CloudsFx::Process(const CloudsPatch& p, int32_t* io, size_t n)
 {
-    const int32_t taps = kCloudsSrcTaps;
     /* the dry side of the crossfade, at BLEND */
     int32_t dw = knob_q30(p.blend);
     uint32_t xi = (uint32_t)dw >> 26, xf = (uint32_t)dw & 0x3FFFFFFu;
     int32_t fo_target = kCloudsXfadeOutQ30[xi];
     if (xi < 16) fo_target += (int32_t)(((int64_t)(kCloudsXfadeOutQ30[xi + 1] - fo_target) * xf) >> 26);
     for (size_t s = 0; s < n; ++s) {
-        int32_t dry[2] = { io[2 * s], io[2 * s + 1] };
+        int32_t dry_l = io[2 * s], dry_r = io[2 * s + 1];
         /* 44.1 -> 32 kHz */
-        for (int32_t c = 0; c < 2; ++c) {
-            int16_t v = (int16_t)clip16(dry[c]);
-            down_hist_[c][down_pos_] = down_hist_[c][down_pos_ + 16] = v;
-        }
-        int32_t newest = down_pos_ + 16;
+        int16_t* dh = &down_hist_[2 * down_pos_];
+        dh[0] = dh[32] = (int16_t)clip16(dry_l);
+        dh[1] = dh[33] = (int16_t)clip16(dry_r);
         down_pos_ = (down_pos_ + 1) & 15;
         if (--down_count_ == 0) {
             const int16_t* h = kCloudsSrcDown[down_phase_];
-            for (int32_t c = 0; c < 2; ++c) {
-                const int16_t* x = &down_hist_[c][newest];
-                int32_t acc = 0;
-                for (int32_t k = 0; k < taps; ++k) acc += h[k] * x[-k];
-                block_in_[2 * block_fill_ + c] = acc >> 6;                         /* Q30 -> Q24 */
-            }
+            const int16_t* x = dh + 32;
+            int64_t al = 0, ar = 0;
+            int32_t c;
+            FOM_FIR16
+            block_in_[2 * block_fill_] = (int32_t)(al >> 6);                       /* Q30 -> Q24 */
+            block_in_[2 * block_fill_ + 1] = (int32_t)(ar >> 6);
             down_phase_ += 441;
             if (down_phase_ >= 640) { down_phase_ -= 640; down_count_ = 2; }
             else { down_phase_ -= 320; down_count_ = 1; }
@@ -690,19 +796,19 @@ void CloudsFx::Process(const CloudsPatch& p, int32_t* io, size_t n)
                 clouds_.Process(p, block_in_, block_wet_, kCloudsBlock);
                 /* 32 -> 44.1 kHz, into the FIFO */
                 for (int32_t t = 0; t < kCloudsBlock; ++t) {
-                    for (int32_t c = 0; c < 2; ++c)
-                        up_hist_[c][up_pos_] = up_hist_[c][up_pos_ + 16] = block_wet_[2 * t + c] >> 9;
-                    int32_t up_newest = up_pos_ + 16;
+                    int32_t* uh = &up_hist_[2 * up_pos_];
+                    uh[0] = uh[32] = block_wet_[2 * t] >> 9;
+                    uh[1] = uh[33] = block_wet_[2 * t + 1] >> 9;
                     up_pos_ = (up_pos_ + 1) & 15;
+                    const int32_t* x = uh + 32;
                     for (;;) {
-                        const int16_t* hu = kCloudsSrcUp[up_phase_];
+                        const int16_t* h = kCloudsSrcUp[up_phase_];
                         uint32_t w = (fifo_write_ & 127u) * 2;
-                        for (int32_t c = 0; c < 2; ++c) {
-                            const int32_t* x = &up_hist_[c][up_newest];
-                            int32_t acc = 0;
-                            for (int32_t k = 0; k < taps; ++k) acc += hu[k] * x[-k];
-                            fifo_[w + c] = (acc + (1 << 14)) >> 15;
-                        }
+                        int64_t al = 0, ar = 0;
+                        int32_t c;
+                        FOM_FIR16
+                        fifo_[w] = (int32_t)((al + (1 << 14)) >> 15);
+                        fifo_[w + 1] = (int32_t)((ar + (1 << 14)) >> 15);
                         ++fifo_write_;
                         up_phase_ += 320;
                         if (up_phase_ >= 441) { up_phase_ -= 441; break; }
@@ -710,7 +816,8 @@ void CloudsFx::Process(const CloudsPatch& p, int32_t* io, size_t n)
                 }
             }
         }
-        /* out: the wet signal (twice: the module's output stage halves) and the dry one */
+        /* out: the module's output (the wet part, and the dry part halved as its output stage halves the mix),
+         * 1.5 times louder through SoftLimit: back near the dry level, never over full scale */
         int32_t wl = 0, wr = 0;
         if (fifo_read_ != fifo_write_) {
             uint32_t r = (fifo_read_ & 127u) * 2;
@@ -718,9 +825,11 @@ void CloudsFx::Process(const CloudsPatch& p, int32_t* io, size_t n)
             ++fifo_read_;
         }
         fade_out_ += (fo_target - fade_out_) >> 6;
-        io[2 * s] = 2 * wl + m30(dry[0], fade_out_);
-        io[2 * s + 1] = 2 * wr + m30(dry[1], fade_out_);
+        io[2 * s] = soft_limit((wl + (m30(dry_l, fade_out_) >> 1)) * 768) >> 9;      /* (Q15 * 1.5 -> Q24) */
+        io[2 * s + 1] = soft_limit((wr + (m30(dry_r, fade_out_) >> 1)) * 768) >> 9;
     }
 }
+#undef FOM_TAP
+#undef FOM_FIR16
 
 }  // namespace fom

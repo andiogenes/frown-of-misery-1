@@ -1,10 +1,11 @@
 # Frown of Misery
 
-**Mutable Instruments' Braids and Rings, and later Clouds, as a firmware for the M-VAVE FM-1.**
+**Mutable Instruments' Braids, Rings and Clouds as a firmware for the M-VAVE FM-1.**
 
-> **Status: early development.** Braids (48 shapes, 4 voices or mono with glide) has been played on an FM-1. Rings'
-> modal resonator is in: rewritten in fixed point and checked against Mutable's float code (`dsp/ref`); it runs in
-> the emulator but has not been played on a device yet. Clouds is still to come (see [Roadmap](#roadmap)).
+> **Status: early development.** Braids (48 shapes, 4 voices or mono with glide) and Rings (its three resonators) have
+> been played on an FM-1. Clouds' granular mode is in, after either of them: rewritten in fixed point and checked
+> against Mutable's float code (`dsp/ref`); it runs in the emulator but has not been played on a device yet (see
+> [Roadmap](#roadmap)).
 
 It is built on [Dinghy](https://github.com/zvenson/dinghy) (zvenson), the small template firmware that sits on
 Felucca's and SLOOP's FM-1 platform. Dinghy provides updates, the USB rescue, MIDI (USB and TRS), USB audio, the panel,
@@ -17,18 +18,23 @@ the screen and flash storage. The Braids code and its 44.1 kHz adapter come from
 | Control | What it does |
 | --- | --- |
 | keys | play: 4 voices sharing one shape, each with its own pitch, or MONO (legato, last note wins). Notes also go out over USB-MIDI. |
-| SELECT | the engine: BRAIDS or RINGS (MIDI program change 1 / 2 does the same) |
+| SELECT | the engine: BRAIDS or RINGS |
+| FX | Clouds after the engine, or not. The boxes under the parameters show the route. MIDI program change 1–4: BRAIDS, RINGS, BRAIDS → CLOUDS, RINGS → CLOUDS |
+| REC | Clouds' FREEZE: the buffer stops recording and the grains keep playing what it holds (the CLOUDS box fills) |
 | ALGORITHM | BRAIDS: the shape, 48 of them, from CSAW to QUESTION MARK. RINGS: the model, MODAL RESONATOR, SYMPATHETIC STRINGS or STRING |
 | EDIT | the next page of parameters; KNOB 1–4 turn the four shown on screen |
 | page OSC | TIMBRE, COLOR (what they do depends on the shape, and the screen says), FINE tune ±50 cents, LEVEL |
 | page AMP | ATTACK, RELEASE (0 ms … 24 s), GLIDE (off … 24 s), VOICES (POLY 4 / MONO) |
 | RINGS page RES | STRUCTURE, BRIGHTNESS, DAMPING, POSITION: Rings' four knobs. STRUCTURE tunes the sympathetic strings and sets the string's dispersion. |
 | RINGS page PART | POLY (1, 2 or 4 voices taking the strikes in turn), FINE tune, LEVEL. Rings has no note-off: a key strikes, DAMPING decides how long it rings. |
+| CLOUDS page GRAIN | POSITION, SIZE, DENSITY, TEXTURE: Clouds' granular mode, its knobs as on the module (DENSITY: regular grains left of noon, random right of it, none at noon) |
+| CLOUDS page MIX | BLEND (dry/wet), SPREAD, FEEDBACK, REVERB: the four on Clouds' BLEND knob |
+| CLOUDS page PITCH | PITCH, −24 … +24 semitones |
 | OCT- / OCT+ | octave |
 | PRESETS | MIDI channel: OMNI, or 1–16 |
 | MASTER | volume |
 | MIDI in (USB, TRS) | notes with velocity, pitch bend ±2 semitones, a clock display |
-| screen | engine, shape, page, the four parameters, last note, and the audio interrupt's CPU load (peak over 0.5 s; also the thin bar along the bottom) |
+| screen | engine, shape, page, the four parameters, last note, the route, and the audio interrupt's CPU load (peak over 0.5 s; also the thin bar along the bottom) |
 
 All settings are saved to flash 2 s after the last change, once nothing is sounding.
 SMK-37 builds also work (`--board smk37`), as they do in Dinghy.
@@ -74,7 +80,7 @@ The workflow pins fm1-emu to one commit (`FM1_EMU_REV`). Change it deliberately 
 
 ```
 firmware/src/frown.c     the app: voices, panel, screen, settings
-dsp/engine/fom_engine.*  the sound engine behind a small C API (C++, MIT)
+dsp/engine/fom_engine.*  the sound engine behind a small C API (C++, MIT): fom_rings.*, fom_clouds.* the ports
 dsp/mi/                  Mutable Instruments' Braids + stmlib (MIT), the 44.1 kHz adapter, the freestanding shim
 dsp/ref/                 the float references: Rings and Clouds unmodified, host only; compare.py measures a port
 firmware/, tools/, tests/ Dinghy's platform, build and host mode
@@ -94,10 +100,16 @@ needs a **fixed-point rewrite**, not a port.
    40-60 dB SNR at the same rate, the strings at 20-60 dB over a five-note sequence, with colour and envelope
    within 0.1-0.4 dB of Rings at 44.1 kHz. (Rings' string models depend on the sample rate; the port is Rings at
    44.1 kHz.) Left: the FM voice and the "string and reverb" model.
-3. **Clouds**, rewritten in fixed point: the granular mode first, using a buffer of about 118 KB in `.pool`
-   (336 KB is free), then pitch shifter, looping delay and spectral as the budget allows. It takes the Braids or
-   Rings voice as its input.
-4. An engine switch on the SELECT encoder: Braids, Rings, Braids → Clouds, Rings → Clouds.
+3. **Clouds**, rewritten in fixed point: the granular mode is done (`dsp/engine/fom_clouds.cc`), with Clouds'
+   feedback, diffuser and reverb, at its own 32 kHz, stereo, 16-bit, with its 128 KB of buffer (in `.pool`). Its
+   grains fall on the same samples as the float original's: `make -C dsp/ref port` measures 73-87 dB SNR for the
+   grains, 46-65 dB with the reverb, whose 12-bit memory rounds as Clouds' does but feeds its own roundings back.
+   It runs after Braids or Rings (FX), resampled from 44.1 kHz and back. Its cost in the emulator at its densest
+   (32 grains): 41 % of the audio budget, 19 % with no grains; so after Rings it plays at most 16 grains at once
+   (8 after the sympathetic strings), and fewer for a while if the audio interrupt goes over 85 %. Left: the
+   stretch, looping delay and spectral modes, and Clouds' low-fidelity quality (half the rate: half the CPU).
+4. Routes like an FM synth's algorithms: Braids → Clouds and Rings → Clouds are in (FX). Next, Braids → Rings
+   (Braids as Rings' exciter, through its audio input) and Braids → Rings → Clouds.
 
 ## Licence
 

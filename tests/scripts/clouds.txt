@@ -1,0 +1,32 @@
+# Clouds: BRAIDS (CSAW) a chord, FX (button 2) puts Clouds after it; the chord again, then DENSITY up (page GRAIN:
+# EDIT twice, KNOB3), TEXTURE up (KNOB4), PITCH +12 (page PITCH, KNOB1), REC (button 13) freezes it, a new chord is
+# not recorded; then program change 3: RINGS > CLOUDS, strikes.
+# Encoders: 0 SELECT, 2..5 KNOB1..4. Buttons: 2 FX, 6 EDIT, 13 REC.
+100 btn 2
+200 keys 0x4891
+900 keys 0
+1100 shot
+1200 btn 6
+1300 btn 6
+1400 enc 4 12
+1500 enc 5 10
+1600 keys 0x891
+2200 keys 0
+2400 shot
+2500 btn 6
+2600 btn 6
+2700 enc 2 12
+2800 keys 0x91
+3200 keys 0
+3400 btn 13
+3600 keys 0x4800
+3900 keys 0
+4100 shot
+4300 btn 13
+4500 midi 0xC0 3 0
+4700 keys 0x80
+4800 keys 0
+5000 keys 0x800
+5100 keys 0
+5500 shot
+6500 end

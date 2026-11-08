@@ -13,7 +13,7 @@
 #include "wav.h"
 
 namespace {
-int16_t buffer_l[fom::kCloudsBufferSamples], buffer_r[fom::kCloudsBufferSamples];
+int16_t buffer[2 * fom::kCloudsBufferSamples];
 int32_t diffuser[fom::kCloudsDiffuserSize];
 uint16_t reverb[fom::kCloudsReverbSize];
 fom::Clouds clouds;
@@ -68,8 +68,8 @@ int main(int argc, char** argv)
     p.pitch = (int32_t)(pitch * 65536.0f + (pitch < 0 ? -0.5f : 0.5f));
     p.blend = q16(blend); p.spread = q16(spread); p.feedback = q16(feedback); p.reverb = q16(rev);
     p.freeze = false;
-    clouds.Init(buffer_l, buffer_r, diffuser, reverb);
-    fx.Init(buffer_l, buffer_r, diffuser, reverb);
+    clouds.Init(buffer, diffuser, reverb);
+    fx.Init(buffer, diffuser, reverb);
 
     const int block = 32;
     std::vector<int16_t> out;

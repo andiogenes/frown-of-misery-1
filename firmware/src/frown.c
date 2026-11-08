@@ -4,7 +4,9 @@
  * This file is the app; the sound is dsp/engine/fom_engine.cc; everything below platform.c is Dinghy's, unchanged.
  *
  *   keys       play; 4 voices paraphonic (one shape, a pitch each) or MONO (legato, last note wins); out over USB-MIDI
- *   SELECT     the engine: BRAIDS or RINGS (Clouds to come)
+ *   SELECT     the engine: BRAIDS or RINGS
+ *   FX         Clouds after the engine, or not (the strip under the info line shows the route)
+ *   REC        Clouds' FREEZE: the buffer stops recording, the grains keep playing what it holds
  *   ALGORITHM  Braids' shape, 48 of them; Rings' model: MODAL RESONATOR, SYMPATHETIC STRINGS, STRING
  *   EDIT       the next page of parameters; KNOB 1..4 turn the four on the screen
  *     BRAIDS     OSC  TIMBRE, COLOR (what they do depends on the shape: the screen says), FINE tune, LEVEL
@@ -13,11 +15,14 @@
  *                     sympathetic strings and sets the string's dispersion)
  *                PART POLY (1, 2, 4 voices taking the strikes in turn), FINE tune, LEVEL
  *              Rings has no note-off: a key strikes, DAMPING decides how long it rings.
+ *     CLOUDS     GRAIN POSITION, SIZE, DENSITY, TEXTURE (Clouds' granular mode, its knobs as on the module)
+ *                MIX   BLEND (dry/wet), SPREAD, FEEDBACK, REVERB
+ *                PITCH PITCH, -24..+24 semitones
  *   OCT- OCT+  the octave
  *   PRESETS    the MIDI channel: OMNI (in: all, out: 1) or 1..16
  *   MASTER     the volume (platform.c)
  *   MIDI in    notes from USB or the TRS jack, with their velocity, pitch bend +-2; a MIDI clock shows its tempo;
- *              program change 0, 1 (programs 1, 2 in most software) picks the engine, as SELECT does
+ *              program change 0..3 (programs 1..4 in most software): BRAIDS, RINGS, BRAIDS > CLOUDS, RINGS > CLOUDS
  *   SMK-37     the keys with velocity, the outer keys, the pads (white keys F3..G5), the pitch wheel (+-2 semitones)
  *   the screen the engine, the shape, the page, the four parameters, the last note, CPU load of the audio interrupt
  *
@@ -52,13 +57,14 @@ static void app_audio(int32_t *out, uint32_t n)
     load = n ? dt * 1000u / (n * 544u) : 0u;
     cpu_now = load;
     if (load > cpu_peak) cpu_peak = load;
+    fom_set_load(load);                         /* (Clouds' guard: fewer grains if the time runs short) */
 }
 
 /* ---- what survives a power-off: the panel, and every parameter of the engine */
-#define SET_VERSION 2u
+#define SET_VERSION 3u
 enum { V_POLY, V_MONO };
 static struct {
-    uint8_t version, oct, ch, engine, page, voices, pad[2];
+    uint8_t version, oct, ch, engine, page, voices, clouds, pad;
     int16_t p[FOM_NPARAM];
 } set;
 
@@ -66,14 +72,14 @@ static void set_defaults(void)
 {
     uint32_t p;
     set.version = SET_VERSION;
-    set.oct = 0; set.ch = 0; set.engine = FOM_E_BRAIDS; set.page = 0; set.voices = V_POLY;
+    set.oct = 0; set.ch = 0; set.engine = FOM_E_BRAIDS; set.page = 0; set.voices = V_POLY; set.clouds = 0;
     for (p = 0; p < FOM_NPARAM; p++) set.p[p] = fom_param_info(p)->def;
 }
 static int set_valid(void)
 {
     uint32_t p;
     if (set.version != SET_VERSION || (int8_t)set.oct < -2 || (int8_t)set.oct > 2 || set.ch > 16u ||
-        set.engine >= FOM_NENGINES || set.voices > V_MONO)
+        set.engine >= FOM_NENGINES || set.voices > V_MONO || set.clouds > 1u)
         return 0;
     for (p = 0; p < FOM_NPARAM; p++)
         if (set.p[p] < fom_param_info(p)->min || set.p[p] > fom_param_info(p)->max) return 0;
@@ -83,12 +89,13 @@ static void set_apply(void)
 {
     uint32_t p;
     fom_set_engine(set.engine);
+    fom_set_clouds(set.clouds);
     for (p = 0; p < FOM_NPARAM; p++) fom_set_param(p, set.p[p]);
 }
 
 /* ---- the pages: what KNOB 1..4 turn, per engine. Parameters past FOM_NPARAM are the app's own. */
 enum { A_VOICES = FOM_NPARAM, A_NONE = 255 };
-#define NPAGE_MAX 4u
+#define NPAGE_MAX 4u                            /* an engine's; Clouds' three follow them */
 typedef struct {
     const char *name;
     uint8_t npages;
@@ -103,7 +110,21 @@ static const engine_ui_t ENGINES[FOM_NENGINES] = {
      {{FOM_P_STRUCTURE, FOM_P_BRIGHTNESS, FOM_P_DAMPING, FOM_P_POSITION},
       {FOM_P_POLY, FOM_P_FINE, FOM_P_LEVEL, A_NONE}}},
 };
+static const engine_ui_t CLOUDS_UI = {"CLOUDS", 3, {"GRAIN", "MIX", "PITCH"},
+     {{FOM_P_C_POSITION, FOM_P_C_SIZE, FOM_P_C_DENSITY, FOM_P_C_TEXTURE},
+      {FOM_P_C_BLEND, FOM_P_C_SPREAD, FOM_P_C_FEEDBACK, FOM_P_C_REVERB},
+      {FOM_P_C_PITCH, A_NONE, A_NONE, A_NONE}}};
 static const engine_ui_t *ui(void) { return &ENGINES[set.engine]; }
+/* the pages of the route: the engine's, then Clouds' if it follows */
+static uint32_t npages(void) { return ui()->npages + (set.clouds ? CLOUDS_UI.npages : 0u); }
+static const char *page_name(uint32_t i)
+{
+    return i < ui()->npages ? ui()->page[i] : CLOUDS_UI.page[i - ui()->npages];
+}
+static uint32_t page_knob(uint32_t i, uint32_t k)
+{
+    return i < ui()->npages ? ui()->knob[i][k] : CLOUDS_UI.knob[i - ui()->npages][k];
+}
 
 static const char *param_name(uint32_t p)
 {
@@ -201,6 +222,7 @@ static int quiet(void)                          /* nothing sounds, not even a re
 #define Y_TABS 60
 #define Y_ROW0 82                               /* four rows of 18 px */
 #define Y_INFO 156
+#define Y_ROUTE 184                             /* the route: BRAIDS / RINGS > CLOUDS */
 #define Y_STATUS 222
 
 static char *put(char *p, const char *s) { while (*s) *p++ = *s++; return p; }
@@ -252,14 +274,15 @@ static void draw_tabs(void)                     /* the pages, the one shown in r
 {
     uint32_t i, w = 0;
     int32_t x;
-    for (i = 0; i < ui()->npages; i++) w += text_w(&FONT_S, ui()->page[i]) + (i ? 24u : 0u);
+    uint32_t n = npages(), gap = n > 3u ? 10u : 24u;      /* (five pages with Clouds: closer together) */
+    for (i = 0; i < n; i++) w += text_w(&FONT_S, page_name(i)) + (i ? gap : 0u);
     cv_begin(240, 16, C_BLACK);
     x = (240 - (int32_t)w) / 2;
-    for (i = 0; i < ui()->npages; i++) {
+    for (i = 0; i < n; i++) {
         uint32_t on = i == set.page;
-        int32_t x1 = cv_text(x, 0, &FONT_S, ui()->page[i], on ? C_ACC : C_OFF);
+        int32_t x1 = cv_text(x, 0, &FONT_S, page_name(i), on ? C_ACC : C_OFF);
         if (on) cv_rect(x, 15, x1 - x, 1, C_ACC);
-        x = x1 + 24;
+        x = x1 + (int32_t)gap;
     }
     cv_blit(0, Y_TABS);
 }
@@ -268,7 +291,7 @@ static int32_t param_get(uint32_t p) { return p == A_VOICES ? set.voices : p < F
 
 static void draw_row(uint32_t k)                /* knob k's parameter on this page: its name, its value */
 {
-    uint32_t p = ui()->knob[set.page][k];
+    uint32_t p = page_knob(set.page, k);
     char s[24], *q = s, lab[8];
     int32_t v = param_get(p);
     cv_begin(240, 16, C_BLACK);
@@ -284,6 +307,10 @@ static void draw_row(uint32_t k)                /* knob k's parameter on this pa
             break;
         case FOM_K_TIME:
             q = (p == FOM_P_GLIDE && !v) ? put(q, "OFF") : put_ms(q, fom_env_ms((uint32_t)v));
+            break;
+        case FOM_K_SEMI:
+            *q++ = v < 0 ? '-' : v > 0 ? '+' : ' ';
+            q = put(put_u(q, (uint32_t)(v < 0 ? -v : v)), " st");
             break;
         case FOM_K_POLY:
             q = put(put_u(q, 1u << (uint32_t)v), v ? " VOICES" : " VOICE");
@@ -301,6 +328,37 @@ static void draw_row(uint32_t k)                /* knob k's parameter on this pa
         if (q != s) cv_text(80, 0, &FONT_S, s, C_WHITE);
     }
     cv_blit(0, Y_ROW0 + 18 * (int32_t)k);
+}
+
+static uint32_t frozen;                         /* Clouds' FREEZE (REC): not kept over a power-off */
+
+/* the route, as boxes with arrows between them: the engine, and Clouds when it follows (filled while frozen) */
+static void draw_route(void)
+{
+    const char *name[2];
+    uint32_t i, n = 0;
+    int32_t x;
+    name[n++] = ui()->name;
+    if (set.clouds) name[n++] = "CLOUDS";
+    cv_begin(240, 24, C_BLACK);
+    x = (240 - (int32_t)n * 72 - ((int32_t)n - 1) * 20) / 2;
+    for (i = 0; i < n; i++) {
+        int32_t tw = (int32_t)text_w(&FONT_S, name[i]);
+        uint32_t fill = i == 1u && frozen;
+        if (i) {                                /* the arrow into this box */
+            cv_rect(x - 18, 11, 14, 2, C_ACC);
+            cv_rect(x - 7, 8, 2, 8, C_ACC);
+            cv_rect(x - 5, 10, 2, 4, C_ACC);
+        }
+        if (fill) cv_rect(x, 0, 72, 24, C_ACC);
+        else {
+            cv_rect(x, 0, 72, 1, C_ACC); cv_rect(x, 23, 72, 1, C_ACC);
+            cv_rect(x, 0, 1, 24, C_ACC); cv_rect(x + 71, 0, 1, 24, C_ACC);
+        }
+        cv_text(x + (72 - tw) / 2, 4, &FONT_S, name[i], fill ? C_BLACK : C_WHITE);
+        x += 92;
+    }
+    cv_blit(0, Y_ROUTE);
 }
 
 static void draw_info(uint32_t src, uint32_t bpm, uint32_t running)   /* the last note, where it came from, the clock */
@@ -337,17 +395,21 @@ static void draw_status(int32_t oct, uint32_t ch, uint32_t cpu)   /* cpu: per mi
     }
 }
 
-/* ---- the engine: SELECT or a MIDI program change */
+/* ---- the route: the engine (SELECT), Clouds after it or not (FX); a MIDI program change sets both */
 static uint32_t engine_changed;                 /* set when it changes: the main loop saves it */
-static void set_engine(uint32_t e)
+static void set_route(uint32_t e, uint32_t clouds)
 {
-    if (e >= FOM_NENGINES || e == set.engine) return;
-    all_off();
+    if (e >= FOM_NENGINES || clouds > 1u || (e == set.engine && clouds == set.clouds)) return;
+    if (e != set.engine) { all_off(); set.page = 0; }
     set.engine = (uint8_t)e;
-    set.page = 0;
+    set.clouds = (uint8_t)clouds;
+    if (set.page >= npages()) set.page = 0;
     fom_set_engine(set.engine);
+    fom_set_clouds(set.clouds);
+    if (!clouds && frozen) { frozen = 0; fom_set_freeze(0); }
     engine_changed = 1;
 }
+static void set_engine(uint32_t e) { set_route(e, set.clouds); }
 
 /* ---- MIDI in: from the main loop, and from app_idle while the screen draws (idle_ok) */
 static uint32_t idle_ok, midi_src, clk_n, clk_t0, clk_bpm, clk_run, clk_beat_ms;
@@ -377,7 +439,8 @@ static void midi_in(void)
         if (ty == 0x90u && d2) { play(d1, d2); midi_src = (uint32_t)src; }
         else if (ty == 0x80u || ty == 0x90u) stop(d1);
         else if (ty == 0xE0u) fom_set_bend(((int32_t)((uint32_t)d2 << 7 | d1) - 8192) >> 5);   /* +-2 semitones */
-        else if (ty == 0xC0u) set_engine(d1);                 /* program change: the engine */
+        else if (ty == 0xC0u && d1 < 2u * FOM_NENGINES)       /* program change: the route */
+            set_route(d1 % FOM_NENGINES, d1 / FOM_NENGINES);
     }
 }
 static void app_idle(void)
@@ -406,7 +469,8 @@ static void knob_turn(uint32_t p, int32_t e)
 static void app_main(void)
 {
     uint32_t prev = 0, k, t_change = 0, dirty = 0, status_drawn = ~0u, info_drawn = ~0u;
-    uint32_t title_drawn = ~0u, shape_drawn = ~0u, tabs_drawn = ~0u, row_drawn[4], cpu_shown = 0, t_cpu = 0;
+    uint32_t title_drawn = ~0u, shape_drawn = ~0u, tabs_drawn = ~0u, route_drawn = ~0u, row_drawn[4], cpu_shown = 0;
+    uint32_t t_cpu = 0;
     uint8_t held[27] = {0};                     /* the note each key plays */
 #if BOARD_SMK37
     static const uint8_t WHITE[16] = {0, 2, 4, 6, 7, 9, 11, 12, 14, 16, 18, 19, 21, 23, 24, 26};   /* white key -> key */
@@ -418,7 +482,7 @@ static void app_main(void)
     fom_init();
     if (settings_load(&set, sizeof set) || !set_valid())
         set_defaults();
-    if (set.page >= ui()->npages) set.page = 0;
+    if (set.page >= npages()) set.page = 0;
     set_apply();
 
     lcd_fill(0, 0, 240, 240, C_BLACK);
@@ -461,7 +525,7 @@ static void app_main(void)
         b = fm1_input_edges(&rel);              /* buttons pressed since the last call (bit = button id) */
         if (b & (1u << BTN_OCT_DOWN) && oct > -2) { set.oct = (uint8_t)(oct - 1); dirty = 1; t_change = fm1_ms; }
         if (b & (1u << BTN_OCT_UP) && oct < 2) { set.oct = (uint8_t)(oct + 1); dirty = 1; t_change = fm1_ms; }
-        if (b & (1u << BTN_EDIT)) { set.page = (uint8_t)((set.page + 1u) % ui()->npages); dirty = 1; t_change = fm1_ms; }
+        if (b & (1u << BTN_EDIT)) { set.page = (uint8_t)((set.page + 1u) % npages()); dirty = 1; t_change = fm1_ms; }
         if ((e = fm1_enc_take(ENC_PRESETS)) != 0) {
             int32_t c = (int32_t)set.ch + e;
             set.ch = (uint8_t)(c < 0 ? 0 : c > 16 ? 16 : c);
@@ -471,13 +535,15 @@ static void app_main(void)
             int32_t c = (int32_t)set.engine + e;
             set_engine((uint32_t)(c < 0 ? 0 : c >= (int32_t)FOM_NENGINES ? (int32_t)FOM_NENGINES - 1 : c));
         }
+        if (b & (1u << BTN_FX)) set_route(set.engine, !set.clouds);   /* Clouds after the engine, or not */
+        if (b & (1u << BTN_REC) && set.clouds) { frozen = !frozen; fom_set_freeze((int)frozen); }
         if (engine_changed) { engine_changed = 0; dirty = 1; t_change = fm1_ms; }
         if ((e = fm1_enc_take(ENC_ALGORITHM)) != 0) {   /* Braids' shape, Rings' model */
             knob_turn(set.engine == FOM_E_RINGS ? FOM_P_MODEL : FOM_P_SHAPE, e); dirty = 1; t_change = fm1_ms;
         }
         for (k = 0; k < 4u; k++)
-            if ((e = fm1_enc_take(ENC_KNOB1 + k)) != 0 && ui()->knob[set.page][k] != A_NONE) {
-                knob_turn(ui()->knob[set.page][k], e); dirty = 1; t_change = fm1_ms;
+            if ((e = fm1_enc_take(ENC_KNOB1 + k)) != 0 && page_knob(set.page, k) != A_NONE) {
+                knob_turn(page_knob(set.page, k), e); dirty = 1; t_change = fm1_ms;
             }
 
         midi_in();
@@ -499,6 +565,8 @@ static void app_main(void)
         fm1_led_key(BTN_OCT_DOWN, oct < 0);
         fm1_led_key(BTN_OCT_UP, oct > 0);
         fm1_led_key(BTN_EDIT, set.page != 0);
+        fm1_led_key(BTN_FX, set.clouds);
+        fm1_led_key(BTN_REC, frozen);
         fm1_led_key(BTN_PLAY, clk_run || (clk_bpm && fm1_ms - clk_beat_ms < 80u));   /* lit: running; a blink a beat */
 #if BOARD_SMK37
         for (k = 0; k < 16u; k++) {             /* a pad glows red while its key sounds */
@@ -510,18 +578,19 @@ static void app_main(void)
 
         idle_ok = 1;                            /* the drawing below may read MIDI meanwhile (LCD_IDLE) */
         if (set.engine != title_drawn) { title_drawn = set.engine; draw_title(); tabs_drawn = ~0u; }
+        if ((st = set.engine | set.clouds << 4 | frozen << 5) != route_drawn) { route_drawn = st; draw_route(); }
         if ((st = (uint32_t)set.p[FOM_P_SHAPE] | set.engine << 8 | (uint32_t)set.p[FOM_P_MODEL] << 12) != shape_drawn) {
             shape_drawn = st;
             draw_shape();
             for (k = 0; k < 4u; k++) row_drawn[k] = ~0u;   /* TIMBRE's and COLOR's names follow the shape */
         }
-        if ((st = set.page | set.engine << 4) != tabs_drawn) {
+        if ((st = set.page | set.engine << 4 | set.clouds << 8) != tabs_drawn) {
             tabs_drawn = st;
             draw_tabs();
             for (k = 0; k < 4u; k++) row_drawn[k] = ~0u;
         }
         for (k = 0; k < 4u; k++)
-            if ((st = (uint32_t)(param_get(ui()->knob[set.page][k]) & 0xFFFF)) != row_drawn[k]) {
+            if ((st = (uint32_t)(param_get(page_knob(set.page, k)) & 0xFFFF)) != row_drawn[k]) {
                 row_drawn[k] = st;
                 draw_row(k);
             }
