@@ -62,18 +62,36 @@ enum {                         /* parameters (all engines; each engine reads the
     FOM_P_C_REVERB,
     FOM_P_C_PITCH,             /* Clouds' PITCH, -24..24 semitones */
     FOM_P_C_QUALITY,
-    FOM_P_R_LEVEL,             /* Rings' output level, 0..32767 (Braids' LEVEL drives Rings in BRAIDS > RINGS) */           /* Clouds' quality: 0 HI (16 bits, 32 kHz), 1 LO (Clouds' low fidelity: 8 bits, 16 kHz) */
+    FOM_P_R_LEVEL,             /* Rings' output level, 0..32767 (Braids' LEVEL drives Rings in BRAIDS > RINGS) */
+    FOM_P_M_RATE,              /* Marbles: T's RATE, BIAS, JITTER (0..32767), its model (0..6) */
+    FOM_P_M_TBIAS,
+    FOM_P_M_JITTER,
+    FOM_P_M_MODEL,
+    FOM_P_M_SPREAD,            /* X's SPREAD, BIAS, STEPS (0..32767), its scale (0..5) */
+    FOM_P_M_XBIAS,
+    FOM_P_M_STEPS,
+    FOM_P_M_SCALE,
+    FOM_P_M_DEJAVU,            /* DEJA VU (noon: the loop locked), its LENGTH, X's range (0..2), T's range (0..2) */
+    FOM_P_M_LENGTH,
+    FOM_P_M_XRANGE,
+    FOM_P_M_TRANGE,
+    FOM_P_M_YDEST,             /* where Y goes (FOM_Y_*), how much, how fast it moves (Marbles' Y divider) */
+    FOM_P_M_YAMOUNT,
+    FOM_P_M_YRATE,           /* Clouds' quality: 0 HI (16 bits, 32 kHz), 1 LO (Clouds' low fidelity: 8 bits, 16 kHz) */
     FOM_NPARAM
 };
 #define FOM_ENV_MAX 20u
 
 /* How a parameter is shown and stored. */
-enum { FOM_K_BAR, FOM_K_TIME, FOM_K_CENTS, FOM_K_INDEX, FOM_K_POLY, FOM_K_SEMI, FOM_K_QUALITY };
+enum { FOM_K_BAR, FOM_K_TIME, FOM_K_CENTS, FOM_K_INDEX, FOM_K_POLY, FOM_K_SEMI, FOM_K_QUALITY, FOM_K_LIST };
+/* Marbles' Y: the parameter it moves */
+enum { FOM_Y_OFF, FOM_Y_TIMBRE, FOM_Y_COLOR, FOM_Y_STRUCTURE, FOM_Y_BRIGHTNESS, FOM_Y_DAMPING, FOM_Y_POSITION,
+       FOM_Y_C_POSITION, FOM_Y_C_SIZE, FOM_Y_C_DENSITY, FOM_Y_C_TEXTURE, FOM_Y_N };
 typedef struct {
     const char *name;          /* <= 6 characters */
     int16_t min, max, def;
     uint8_t kind;              /* FOM_K_*: a bar, a time (fom_env_ms), cents (value * 100 / 128), a plain index,
-                                  polyphony (1 << value), semitones, HI / LO */
+                                  polyphony (1 << value), semitones, HI / LO, a name from the app's lists */
 } fom_param_info_t;
 const fom_param_info_t *fom_param_info(uint32_t p);
 
@@ -87,6 +105,16 @@ void fom_set_freeze(int on);
 void fom_set_load(uint32_t permille);
 /* Clouds runs LO whatever FOM_P_C_QUALITY says after Rings' sympathetic strings (HI does not fit there) */
 int fom_clouds_lofi(void);                 /* LO now, asked for or not */
+/* Marbles before the engine: it plays the notes (t1 t2 t3 on voices 1 2 3, pitched by X1 X2 X3 above the root) and
+ * moves one parameter by Y. While it runs the app plays no voices itself. */
+void fom_set_marbles(int on);
+void fom_marbles_root(uint32_t note);      /* the note X's 0 V plays (the key last held) */
+void fom_marbles_entropy(uint32_t word);   /* stir its randomness */
+/* the MIDI clock as Marbles' T clock: -1 none (its own RATE), else the clock's level (a 16th note's first half) */
+void fom_marbles_clock(int level);
+uint32_t fom_marbles_gates(void);          /* t1 t2 t3 now, bits 0 1 2 (the screen's LEDs) */
+int32_t fom_marbles_y(void);               /* Y now, -32768..32767 */
+
 /* The timer the engine reads to tell Clouds' share of the interrupt's time (fom_clouds_ticks: in the last call) */
 void fom_set_ticks(uint32_t (*ticks)(void));
 uint32_t fom_clouds_ticks(void);

@@ -88,6 +88,20 @@ for (const [name, program, clicks, dense, limit] of [["Braids", 0, 0], ["Rings m
   run(2.5);                                             // let it ring out before the next engine
 }
 
+// Marbles (SEQ, key 11) before Braids, then before Braids > Rings > Clouds: it plays by itself (its notes at its own
+// RATE); the CPU with it (its code runs in software floating point)
+for (const [name, program] of [["Marbles > Braids", 0], ["Marbles > Braids > Rings > Clouds", 5]]) {
+  midi(0xC0, program);
+  if (!program) { run(0.1); press(11); }
+  run(2.5);
+  const lvl = level(1.0);
+  run(0.6);
+  const load = cpu();
+  console.log(`${name}: level ${lvl.toFixed(4)}; CPU meter ${load.toFixed(0)} %`);
+  if (!(lvl > 0.002)) fail.push(`${name}: Marbles plays nothing`);
+  if (load > (program ? 75 : MAX_CPU)) fail.push(`${name}: CPU ${load.toFixed(0)} % > ${program ? 75 : MAX_CPU} %`);
+}
+
 if (fail.length) {
   console.error(`emulator smoke test FAILED: ${fail.join("; ")}`);
   process.exit(1);

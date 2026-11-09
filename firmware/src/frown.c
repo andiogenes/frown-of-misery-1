@@ -7,6 +7,10 @@
  *   SELECT     the engine: BRAIDS, RINGS, or BRAIDS > RINGS (Braids into Rings' audio input: a note plays Braids and
  *              picks Rings' voice and note; Braids' LEVEL drives Rings, Rings' PART LEVEL is its output)
  *   FX         Clouds after the engine, or not (the strip under the info line shows the route)
+ *   SEQ        Marbles before the engine (its own code, MIT): it plays the notes, t1 t2 t3 on three voices pitched by
+ *              X1 X2 X3 above the root (the key last pressed), and Y moves a knob of your choice (page Y). Its pages:
+ *              T RATE, BIAS, JITTER, MODEL; X SPREAD, BIAS, STEPS, SCALE; LOOP DEJA VU, LENGTH, X's RANGE, T's
+ *              RANGE; Y where to, how much, how fast. A running MIDI clock clocks T (16th notes); ALGORITHM: T's model
  *   REC        Clouds' FREEZE: the buffer stops recording, the grains keep playing what it holds
  *   ALGORITHM  Braids' shape, 48 of them; Rings' model: MODAL RESONATOR, SYMPATHETIC STRINGS, STRING
  *   EDIT       the next page of parameters; KNOB 1..4 turn the four on the screen
@@ -67,10 +71,10 @@ static void app_audio(int32_t *out, uint32_t n)
 }
 
 /* ---- what survives a power-off: the panel, and every parameter of the engine */
-#define SET_VERSION 5u
+#define SET_VERSION 6u
 enum { V_POLY, V_MONO };
 static struct {
-    uint8_t version, oct, ch, engine, page, voices, clouds, pad;
+    uint8_t version, oct, ch, engine, page, voices, clouds, marbles;
     int16_t p[FOM_NPARAM];
 } set;
 
@@ -78,14 +82,14 @@ static void set_defaults(void)
 {
     uint32_t p;
     set.version = SET_VERSION;
-    set.oct = 0; set.ch = 0; set.engine = FOM_E_BRAIDS; set.page = 0; set.voices = V_POLY; set.clouds = 0;
+    set.oct = 0; set.ch = 0; set.engine = FOM_E_BRAIDS; set.page = 0; set.voices = V_POLY; set.clouds = 0; set.marbles = 0;
     for (p = 0; p < FOM_NPARAM; p++) set.p[p] = fom_param_info(p)->def;
 }
 static int set_valid(void)
 {
     uint32_t p;
     if (set.version != SET_VERSION || (int8_t)set.oct < -2 || (int8_t)set.oct > 2 || set.ch > 16u ||
-        set.engine >= FOM_NENGINES || set.voices > V_MONO || set.clouds > 1u)
+        set.engine >= FOM_NENGINES || set.voices > V_MONO || set.clouds > 1u || set.marbles > 1u)
         return 0;
     for (p = 0; p < FOM_NPARAM; p++)
         if (set.p[p] < fom_param_info(p)->min || set.p[p] > fom_param_info(p)->max) return 0;
@@ -96,17 +100,18 @@ static void set_apply(void)
     uint32_t p;
     fom_set_engine(set.engine);
     fom_set_clouds(set.clouds);
+    fom_set_marbles(set.marbles);
     for (p = 0; p < FOM_NPARAM; p++) fom_set_param(p, set.p[p]);
 }
 
 /* ---- the pages: what KNOB 1..4 turn, per module; a route's pages are its modules' in order. Parameters past
  * FOM_NPARAM are the app's own. */
 enum { A_VOICES = FOM_NPARAM, A_NONE = 255 };
-enum { M_BRAIDS, M_RINGS, M_CLOUDS, M_N };
+enum { M_BRAIDS, M_RINGS, M_CLOUDS, M_MARBLES, M_N };
 typedef struct {
-    const char *page[3];
+    const char *page[4];
     uint8_t npages;
-    uint8_t knob[3][4];
+    uint8_t knob[4][4];
 } module_ui_t;
 static const module_ui_t MODULES[M_N] = {
     {{"OSC", "AMP"}, 2,
@@ -119,11 +124,17 @@ static const module_ui_t MODULES[M_N] = {
      {{FOM_P_C_POSITION, FOM_P_C_SIZE, FOM_P_C_DENSITY, FOM_P_C_TEXTURE},
       {FOM_P_C_BLEND, FOM_P_C_SPREAD, FOM_P_C_FEEDBACK, FOM_P_C_REVERB},
       {FOM_P_C_PITCH, FOM_P_C_QUALITY, A_NONE, A_NONE}}},
+    {{"T", "X", "LOOP", "Y"}, 4,
+     {{FOM_P_M_RATE, FOM_P_M_TBIAS, FOM_P_M_JITTER, FOM_P_M_MODEL},
+      {FOM_P_M_SPREAD, FOM_P_M_XBIAS, FOM_P_M_STEPS, FOM_P_M_SCALE},
+      {FOM_P_M_DEJAVU, FOM_P_M_LENGTH, FOM_P_M_XRANGE, FOM_P_M_TRANGE},
+      {FOM_P_M_YDEST, FOM_P_M_YAMOUNT, FOM_P_M_YRATE, A_NONE}}},
 };
-/* the route's modules in order: the engine's one or two, then Clouds if it follows */
+/* the route's modules in order: Marbles if it plays, the engine's one or two, then Clouds if it follows */
 static uint32_t route_modules(uint8_t *m)
 {
     uint32_t n = 0;
+    if (set.marbles) m[n++] = M_MARBLES;
     if (set.engine != FOM_E_RINGS) m[n++] = M_BRAIDS;
     if (set.engine != FOM_E_BRAIDS) m[n++] = M_RINGS;
     if (set.clouds) m[n++] = M_CLOUDS;
@@ -131,7 +142,7 @@ static uint32_t route_modules(uint8_t *m)
 }
 static uint32_t npages(void)
 {
-    uint8_t m[3];
+    uint8_t m[4];
     uint32_t i, n = route_modules(m), p = 0;
     for (i = 0; i < n; i++) p += MODULES[m[i]].npages;
     return p;
@@ -139,7 +150,7 @@ static uint32_t npages(void)
 /* page i of the route: its module and its index there */
 static uint32_t page_module(uint32_t i, uint32_t *local)
 {
-    uint8_t m[3];
+    uint8_t m[4];
     uint32_t k, n = route_modules(m);
     for (k = 0; k < n; k++) {
         if (i < MODULES[m[k]].npages) { if (local) *local = i; return m[k]; }
@@ -212,6 +223,12 @@ static void mono_off(uint32_t note)
 
 static void play(uint32_t note, uint32_t vel)
 {
+    if (note <= 127u && vel && set.marbles) {   /* Marbles plays: a key sets its root (and stirs its dice) */
+        fom_marbles_root(note);
+        fom_marbles_entropy(fm1_ticks() ^ note << 24);
+        last_note = note;
+        return;
+    }
     uint32_t v, pick = 0, best = 0xFFFFFFFFu;
     if (note > 127u || !vel) return;
     if (set.engine != FOM_E_BRAIDS) fom_strike(note, vel);  /* (Rings alone: voice[] below only keeps keys lit) */
@@ -231,6 +248,7 @@ static void play(uint32_t note, uint32_t vel)
 }
 static void stop(uint32_t note)
 {
+    if (set.marbles) return;
     uint32_t v;
     if (note > 127u) return;
     if (set.engine != FOM_E_RINGS && set.voices == V_MONO) { mono_off(note); return; }
@@ -391,10 +409,42 @@ static void draw_rings_leds(int32_t y)
     }
 }
 
+/* the names of the parameters that pick from a list (FOM_K_LIST) */
+static const char *list_name(uint32_t p, int32_t v);
+/* the same, short enough for under a knob (7 characters) */
+static const char *list_short(uint32_t p, int32_t v)
+{
+    static const char *const MODEL[7] = {"COIN", "CLUSTER", "DRUMS", "INDEP", "DIVIDER", "3 STATE", "MARKOV"};
+    static const char *const SCALE[6] = {"MAJOR", "MINOR", "PENTA", "PELOG", "BHAIRAV", "SHRI"};
+    if (p == FOM_P_M_MODEL) return MODEL[v < 0 ? 0 : v > 6 ? 6 : v];
+    if (p == FOM_P_M_SCALE) return SCALE[v < 0 ? 0 : v > 5 ? 5 : v];
+    return list_name(p, v);
+}
+
+static const char *list_name(uint32_t p, int32_t v)
+{
+    static const char *const MODEL[7] = {"COIN TOSS", "CLUSTERS", "DRUMS", "INDEPENDENT", "DIVIDER", "3 STATES",
+                                         "MARKOV"};
+    static const char *const SCALE[6] = {"MAJOR", "MINOR", "PENTATONIC", "PELOG", "BHAIRAV", "SHRI"};
+    static const char *const XRANGE[3] = {"2 OCT", "5 OCT", "+-5 OCT"};
+    static const char *const TRANGE[3] = {"x 1/4", "x 1", "x 4"};
+    static const char *const YDEST[FOM_Y_N] = {"OFF", "TIMBRE", "COLOR", "STRUCT", "BRIGHT", "DAMP", "POSN",
+                                               "C.POSN", "C.SIZE", "C.DENS", "C.TEXT"};
+    if (v < 0) v = 0;
+    switch (p) {
+    case FOM_P_M_MODEL: return MODEL[v > 6 ? 6 : v];
+    case FOM_P_M_SCALE: return SCALE[v > 5 ? 5 : v];
+    case FOM_P_M_XRANGE: return XRANGE[v > 2 ? 2 : v];
+    case FOM_P_M_TRANGE: return TRANGE[v > 2 ? 2 : v];
+    case FOM_P_M_YDEST: return YDEST[v >= FOM_Y_N ? FOM_Y_N - 1 : v];
+    default: return "?";
+    }
+}
+
 static void draw_head(void)                     /* the module's top: name, subtitle, band, its display or LEDs */
 {
-    static const char *const NAME[3] = {"Braids", "Rings", "Clouds"};
-    static const char *const SUB[3] = {"macro oscillator", "resonator", "texture synthesizer"};
+    static const char *const NAME[4] = {"Braids", "Rings", "Clouds", "Marbles"};
+    static const char *const SUB[4] = {"macro oscillator", "resonator", "texture synthesizer", "random sampler"};
     uint32_t m = shown_module();
     char s[32], *q = s;
     cv_begin(240, 64, C_PANEL);
@@ -415,6 +465,15 @@ static void draw_head(void)                     /* the module's top: name, subti
         cv_text_mid(120, 31, &FONT_S, MODEL[set.p[FOM_P_MODEL]], C_INK, C_PANEL);
         cv_text_mid(120, 47, &FONT_S, set.p[FOM_P_POLY] == 2 ? "4 voices" : set.p[FOM_P_POLY] ? "2 voices" : "1 voice",
                     C_INK2, C_PANEL);
+    } else if (m == M_MARBLES) {                /* Marbles: t1 t2 t3 lit while high, the model and the scale */
+        static const uint16_t COL[3] = {C_TEAL, RGB(240, 150, 20), C_PINK};
+        uint32_t g = fom_marbles_gates(), i;
+        for (i = 0; i < 3u; i++) {
+            cv_disc(18 + 24 * (int32_t)i, 40, 8, (g >> i & 1u) ? COL[i] : C_SKIRT);
+            cv_text_mid(18 + 24 * (int32_t)i, 47, &FONT_S, i == 0 ? "t1" : i == 1 ? "t2" : "t3", C_INK2, C_PANEL);
+        }
+        cv_text_on(92, 30, &FONT_S, list_name(FOM_P_M_MODEL, set.p[FOM_P_M_MODEL]), C_INK, C_PANEL);
+        cv_text_on(92, 46, &FONT_S, list_name(FOM_P_M_SCALE, set.p[FOM_P_M_SCALE]), C_INK2, C_PANEL);
     } else {                                    /* Clouds: FREEZE (REC), its mode and quality */
         cv_disc(22, 46, 9, frozen ? C_PINK : C_SKIRT);
         cv_disc(22, 46, 5, frozen ? RGB(255, 140, 160) : C_PANEL);
@@ -450,8 +509,10 @@ static int32_t param_get(uint32_t p) { return p == A_VOICES ? set.voices : p < F
 static uint16_t pill_colour(uint32_t p)
 {
     switch (p) {
-    case FOM_P_TIMBRE: case FOM_P_C_SIZE: case FOM_P_C_TEXTURE: return C_TEAL;
-    case FOM_P_COLOR: case FOM_P_C_POSITION: case FOM_P_C_DENSITY: return C_PINK;
+    case FOM_P_TIMBRE: case FOM_P_C_SIZE: case FOM_P_C_TEXTURE:
+    case FOM_P_M_RATE: case FOM_P_M_TBIAS: case FOM_P_M_JITTER: return C_TEAL;
+    case FOM_P_COLOR: case FOM_P_C_POSITION: case FOM_P_C_DENSITY:
+    case FOM_P_M_SPREAD: case FOM_P_M_XBIAS: case FOM_P_M_STEPS: return C_PINK;
     default: return C_PANEL;
     }
 }
@@ -511,6 +572,9 @@ static void draw_knob(uint32_t k)               /* knob k (KNOB 1..4) on this pa
             q = put(put_u(q, (uint32_t)(c < 0 ? -c : c)), " ct");
             break;
         }
+        case FOM_K_LIST:
+            q = put(q, list_short(p, v));
+            break;
         case FOM_K_INDEX:
             q = put_u(q, (uint32_t)v);
             break;
@@ -573,14 +637,15 @@ static void draw_cable(int32_t x0, int32_t x1, int32_t y, uint16_t c)   /* a sag
 }
 static void draw_route(void)
 {
-    static const char *const NAME[3] = {"Braids", "Rings", "Clouds"};
-    static const uint16_t CABLE[3] = {C_PINK, RGB(240, 150, 20), C_TEAL};
-    uint8_t m[3];
-    const char *label[3];
-    int32_t w[3], x, gap, total = 0, jack_out = 0, y = 3;
+    static const char *const NAME[4] = {"Braids", "Rings", "Clouds", "Marbles"};
+    static const uint16_t CABLE[4] = {RGB(90, 170, 60), C_PINK, RGB(240, 150, 20), C_TEAL};
+    uint8_t m[4];
+    const char *label[4];
+    int32_t w[4], x, gap, total = 0, jack_out = 0, y = 3;
     uint32_t i, n = route_modules(m);
     for (i = 0; i < n; i++) {
-        label[i] = m[i] == M_CLOUDS && fom_clouds_lofi() ? "Clouds lo" : NAME[m[i]];
+        static const char *const SHORT[4] = {"Bra", "Rin", "Clo", "Mar"};
+        label[i] = n > 3u ? SHORT[m[i]] : m[i] == M_CLOUDS && fom_clouds_lofi() ? "Clouds lo" : NAME[m[i]];
         w[i] = (int32_t)text_w(&FONT_S, label[i]) + 12;
         total += w[i];
     }
@@ -604,9 +669,9 @@ static void draw_route(void)
     if (n < 3u) {
         draw_plate(198, y, 36, "OUT", C_DARK);
         draw_jack(216, y + 24);
-        draw_cable(jack_out, 216, y + 23, CABLE[2]);
+        draw_cable(jack_out, 216, y + 23, CABLE[3]);
     } else {
-        draw_cable(jack_out, 238, y + 23, CABLE[2]);
+        draw_cable(jack_out, 238, y + 23, CABLE[3]);
     }
     cv_blit(0, Y_ROUTE);
 }
@@ -668,11 +733,12 @@ static void midi_in(void)
                 clk_beat_ms = fm1_ms;
             }
             clk_n++;
+            fom_marbles_clock(clk_run ? (int)(clk_n % 6u < 3u) : -1);   /* 16th notes, Marbles' T clock */
             continue;
         }
         if (st == 0xFAu) { clk_run = 1; clk_n = 0; continue; }   /* START: the next clock is beat 1 */
         if (st == 0xFBu) { clk_run = 1; continue; }              /* CONTINUE */
-        if (st == 0xFCu) { clk_run = 0; continue; }              /* STOP */
+        if (st == 0xFCu) { clk_run = 0; fom_marbles_clock(-1); continue; }   /* STOP: Marbles on its own RATE */
         if (set.ch && (st & 15u) != set.ch - 1u) continue;      /* not our channel */
         if (ty == 0x90u && d2) { play(d1, d2); midi_src = (uint32_t)src; }
         else if (ty == 0x80u || ty == 0x90u) stop(d1);
@@ -778,11 +844,19 @@ static void app_main(void)
             set_engine((uint32_t)(c < 0 ? 0 : c >= (int32_t)FOM_NENGINES ? (int32_t)FOM_NENGINES - 1 : c));
         }
         if (b & (1u << BTN_FX)) set_route(set.engine, !set.clouds);   /* Clouds after the engine, or not */
+        if (b & (1u << BTN_SEQ)) {              /* Marbles before the engine, or not */
+            all_off();
+            set.marbles = (uint8_t)!set.marbles;
+            set.page = 0;
+            fom_set_marbles(set.marbles);
+            engine_changed = 1;
+        }
         if (b & (1u << BTN_REC) && set.clouds) { frozen = !frozen; fom_set_freeze((int)frozen); }
         if (engine_changed) { engine_changed = 0; dirty = 1; t_change = fm1_ms; }
         if ((e = fm1_enc_take(ENC_ALGORITHM)) != 0) {   /* Braids' shape, Rings' model */
             /* Rings' model on Rings' pages (and wherever Braids is not), else Braids' shape */
-            knob_turn(shown_module() == M_RINGS || set.engine == FOM_E_RINGS ? FOM_P_MODEL : FOM_P_SHAPE, e);
+            knob_turn(shown_module() == M_MARBLES ? FOM_P_M_MODEL
+                      : shown_module() == M_RINGS || set.engine == FOM_E_RINGS ? FOM_P_MODEL : FOM_P_SHAPE, e);
             dirty = 1; t_change = fm1_ms;
         }
         for (k = 0; k < 4u; k++)
@@ -791,7 +865,10 @@ static void app_main(void)
             }
 
         midi_in();
-        if (clk_bpm && fm1_ms - clk_t0 > 2000u) clk_bpm = 0, clk_run = 0;   /* the clock has stopped coming */
+        if (clk_bpm && fm1_ms - clk_t0 > 2000u) {   /* the clock has stopped coming */
+            clk_bpm = 0, clk_run = 0;
+            fom_marbles_clock(-1);
+        }
 
         if (fm1_ms - t_cpu >= 500u) {           /* the CPU meter: the peak of the last half second */
             t_cpu = fm1_ms;
@@ -812,6 +889,7 @@ static void app_main(void)
         fm1_led_key(BTN_OCT_UP, oct > 0);
         fm1_led_key(BTN_EDIT, set.page != 0);
         fm1_led_key(BTN_FX, set.clouds);
+        fm1_led_key(BTN_SEQ, set.marbles);
         fm1_led_key(BTN_REC, frozen);
         fm1_led_key(BTN_PLAY, clk_run || (clk_bpm && fm1_ms - clk_beat_ms < 80u));   /* lit: running; a blink a beat */
 #if BOARD_SMK37
@@ -824,16 +902,19 @@ static void app_main(void)
 
         idle_ok = 1;                            /* the drawing below may read MIDI meanwhile (LCD_IDLE) */
         if ((st = shown_module() | (uint32_t)set.p[FOM_P_SHAPE] << 2 | (uint32_t)set.p[FOM_P_MODEL] << 8 |
-                  (uint32_t)set.p[FOM_P_POLY] << 10 | frozen << 12 | (uint32_t)fom_clouds_lofi() << 13) != head_drawn) {
+                  (uint32_t)set.p[FOM_P_POLY] << 10 | frozen << 12 | (uint32_t)fom_clouds_lofi() << 13 |
+                  (shown_module() == M_MARBLES ? fom_marbles_gates() | (uint32_t)set.p[FOM_P_M_MODEL] << 3 |
+                   (uint32_t)set.p[FOM_P_M_SCALE] << 6 : 0u) << 14) != head_drawn) {
             head_drawn = st;
             draw_head();
             for (k = 0; k < 4u; k++) row_drawn[k] = ~0u;   /* TIMBRE's and COLOR's names follow the shape */
         }
-        if ((st = set.engine | set.clouds << 4 | frozen << 5 | (uint32_t)fom_clouds_lofi() << 6) != route_drawn) {
+        if ((st = set.engine | set.clouds << 4 | frozen << 5 | (uint32_t)fom_clouds_lofi() << 6 |
+                  (uint32_t)set.marbles << 7) != route_drawn) {
             route_drawn = st;
             draw_route();
         }
-        if ((st = set.page | set.engine << 4 | set.clouds << 8) != tabs_drawn) {
+        if ((st = set.page | set.engine << 4 | set.clouds << 8 | (uint32_t)set.marbles << 9) != tabs_drawn) {
             tabs_drawn = st;
             draw_tabs();
             for (k = 0; k < 4u; k++) row_drawn[k] = ~0u;

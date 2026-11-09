@@ -1,0 +1,7 @@
+/* SPDX-License-Identifier: MIT
+ * Freestanding stand-in for <cmath>, for Marbles (dsp/mi/mb): see math.h here. */
+#ifndef FOM_MB_SHIM_CMATH
+#define FOM_MB_SHIM_CMATH
+#include <math.h>
+namespace std { using ::fabs; using ::fabsf; }
+#endif

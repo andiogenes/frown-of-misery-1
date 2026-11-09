@@ -45,6 +45,14 @@ into the GPL-3.0-only firmware and stays reusable elsewhere. Nothing copied or a
 
 Dinghy's logo (the designburg signet, all rights reserved) is not part of this fork.
 
+## Marbles and compiler-rt
+
+`dsp/mi/mb/` is Mutable Instruments' Marbles (its generators) and the stmlib it uses, unmodified, MIT, Copyright
+Emilie Gillet (see `dsp/mi/mb/README.md`). It runs in software floating point: the firmware links the soft-float
+routines of compiler-rt, LLVM's runtime library, as the JieLi toolchain ships it (`pi32v2/lib/libcompiler_rt.a`).
+compiler-rt is dual licensed under the University of Illinois/NCSA Open Source License and the MIT license
+(Copyright the LLVM Team and its contributors).
+
 ## The screen
 
 The screen (`firmware/src/frown.c`, GPL-3.0-only) is drawn after the look of Mutable Instruments' panels: their

@@ -20,6 +20,8 @@ the screen and flash storage. The Braids code and its 44.1 kHz adapter come from
 | keys | play: 4 voices sharing one shape, each with its own pitch, or MONO (legato, last note wins). Notes also go out over USB-MIDI. |
 | SELECT | the engine: BRAIDS, RINGS, or BRAIDS → RINGS (Braids into Rings' audio input instead of its exciter: a note plays Braids and picks Rings' voice and note; Braids' LEVEL drives Rings, Rings' PART LEVEL is its output) |
 | FX | Clouds after the engine, or not. The plates and cables under the parameters show the route. MIDI program change 1–6: BRAIDS, RINGS, BRAIDS → CLOUDS, RINGS → CLOUDS, BRAIDS → RINGS, BRAIDS → RINGS → CLOUDS |
+| SEQ | Marbles before the engine (Mutable's own code): it plays the notes, t1 t2 t3 on three voices pitched by X1 X2 X3 above the root (the key last pressed, or a MIDI note), and Y moves a knob of your choice. A running MIDI clock clocks it (16th notes). |
+| MARBLES pages | T: RATE, BIAS, JITTER, MODEL (coin toss, clusters, drums, independent, divider, three states, Markov; also on ALGORITHM). X: SPREAD, BIAS, STEPS, SCALE (major, minor, pentatonic, pelog, Bhairav, Shri). LOOP: DEJA VU (noon: the loop locks), LENGTH, X's RANGE, T's RANGE. Y: where Y goes (TIMBRE, COLOR, Rings' or Clouds' knobs), how much, how fast. |
 | REC | Clouds' FREEZE: the buffer stops recording and the grains keep playing what it holds (the CLOUDS box fills) |
 | ALGORITHM | BRAIDS: the shape, 48 of them, from CSAW to QUESTION MARK. RINGS: the model, MODAL RESONATOR, SYMPATHETIC STRINGS or STRING |
 | EDIT | the next page of parameters, through the route's modules in order; KNOB 1–4 turn the four shown on screen. ALGORITHM turns Rings' model on Rings' pages, Braids' shape elsewhere |

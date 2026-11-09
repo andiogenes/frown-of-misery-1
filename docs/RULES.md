@@ -7,6 +7,9 @@ has habits. These are the ones that cost the SLOOP / sloopDX / zp12 people time;
 
 - **No `float`, no `double`.** There is no FPU and no libgcc to emulate one: the link fails. Use fixed point:
   Q15 (a value times 32768) for levels, Q12 for gains, a 32-bit phase for oscillators.
+  (Frown of Misery: one exception, Marbles, `dsp/mi/mb`, runs Mutable's own float code in software at control
+  rate, with compiler-rt's soft-float linked for it; `tools/build.py` fails the build if any other object needs
+  a soft-float routine.)
 - **No 64-bit division.** `int64_t` multiplication is fine; `a / b` or `a % b` on 64-bit values needs
   `__udivdi3`, which is not there: the link fails. Shift instead, or divide 32-bit values.
 - **A division by zero does not crash.** It gives a wrong value (the trap is off, as SLOOP has it, because the

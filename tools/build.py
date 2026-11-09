@@ -171,6 +171,7 @@ DSP = SRC / "dsp"
 ENGINE_SRC = [DSP / "engine" / "fom_engine.cc",
               DSP / "engine" / "fom_rings.cc",
               DSP / "engine" / "fom_clouds.cc",
+              DSP / "engine" / "fom_marbles.cc",
               DSP / "mi" / "fm1_braids.cc",
               DSP / "mi" / "braids" / "analog_oscillator.cc",
               DSP / "mi" / "braids" / "digital_oscillator.cc",
@@ -182,6 +183,40 @@ ENGINE_SRC = [DSP / "engine" / "fom_engine.cc",
 # oscillators in .pool (.bss is only 96 KB).
 CXXFLAGS = [*CFLAGS, "-std=c++11", "-DFM1_TARGET=1", "-fno-exceptions", "-fno-rtti", "-fno-threadsafe-statics",
             "-Idsp/mi/shim", "-Idsp/mi", "-Idsp/engine", "-Idsp"]
+
+
+# Marbles (dsp/mi/mb: its own code and the stmlib it was written with, MIT) runs in software floating point, the one
+# part of the firmware that does: compiler-rt's soft-float routines from the toolchain's own library, linked for it.
+# Its own include tree comes first (its stmlib is newer than Braids'), Mutable's TEST switch picks stmlib's portable C
+# over ARM assembly, and dsp/mi/mb/shim stands in for math.h.
+MB = DSP / "mi" / "mb"
+MARBLES_SRC = [MB / "marbles" / "random" / f for f in ("discrete_distribution_quantizer.cc", "lag_processor.cc",
+               "output_channel.cc", "quantizer.cc", "t_generator.cc", "x_y_generator.cc")] + \
+              [MB / "marbles" / "ramp" / "ramp_extractor.cc", MB / "marbles" / "resources.cc",
+               MB / "stmlib" / "dsp" / "units.cc"]
+MARBLES_FLAGS = ["-DTEST", "-Idsp/mi/mb/shim", "-Idsp/mi/mb"]
+SOFT_FLOAT = re.compile(r"\b__(add|sub|mul|div|eq|ne|lt|le|gt|ge|unord|fix|fixuns|float|floatun|extend|trunc)[a-z]*[sd]f[0-9]?\b")
+
+
+def compiler_rt():
+    """the toolchain's compiler-rt (soft-float for Marbles), as the linker sees the toolchain"""
+    rel = "pi32v2/lib/libcompiler_rt.a"
+    return f"/opt/jieli/{rel}" if use_docker() else str(toolchain() / rel)
+
+
+def check_float(objs):
+    """Float stays in Marbles: any other object that needs a soft-float routine is a mistake (the rule of
+    docs/RULES.md still holds there)."""
+    bad = []
+    for o in objs:
+        if o.name.startswith("mb_") or o.name == "fom_marbles.o":
+            continue
+        und = tc("common/bin/objdump", "-t", o)
+        if SOFT_FLOAT.search(und):
+            bad.append(o.name)
+    if bad:
+        raise SystemExit(f"float outside Marbles: {', '.join(bad)} need soft-float (docs/RULES.md)")
+    print("  ok    float: Marbles only")
 
 
 # ---- app
@@ -202,7 +237,15 @@ def build_app():
     for s in ENGINE_SRC:
         o = OUT / (s.stem + ".o")
         eng_objs.append(o)
-        cmds.append(("cxx", *CXXFLAGS, "-c", s, "-o", o))
+        if s.name == "fom_marbles.cc":
+            cmds.append(("cxx", *MARBLES_FLAGS, *CXXFLAGS, "-c", s, "-o", o))
+        else:
+            cmds.append(("cxx", *CXXFLAGS, "-c", s, "-o", o))
+    mb_objs = []
+    for s in MARBLES_SRC:
+        o = OUT / ("mb_" + s.stem + ".o")
+        mb_objs.append(o)
+        cmds.append(("cxx", *MARBLES_FLAGS, *CXXFLAGS, "-c", s, "-o", o))
     tc_all(*cmds)
     elf = OUT / "frown.elf"
     ld = FW / "app.ld"
@@ -213,7 +256,8 @@ def build_app():
         ld = OUT / "app.ld"
         ld.write_text(txt.replace("LENGTH = 0x8DFBC", f"LENGTH = {APP_SLOT:#X}".replace("0X", "0x")))
     tc("pi32v2/bin/ld", "--gc-sections", "-e", "_start", "-T", ld, OUT / "crt0.o", OUT / "fm1_vec.o",
-       OUT / "fm1_isr.o", OUT / "frown.o", *eng_objs, "-o", elf)
+       OUT / "fm1_isr.o", OUT / "frown.o", *eng_objs, *mb_objs, compiler_rt(), "-o", elf)
+    check_float(eng_objs + mb_objs + [OUT / "frown.o"])
     for sect in ("text.bin", "data.bin", "ramtext.bin"):
         (OUT / sect).unlink(missing_ok=True)
     *_, syms, dis, rt = tc_all(("common/bin/objcopy", "-O", "binary", "-j", ".text", elf, OUT / "text.bin"),

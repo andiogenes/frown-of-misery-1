@@ -1,0 +1,21 @@
+# Marbles: SEQ (button 11) puts Marbles before Braids; a key (C4) sets the root; 3 s of its notes; X page: SPREAD
+# up, then DEJA VU at noon (page LOOP) so it loops; then Rings, Clouds after; Y on Braids' TIMBRE (page Y).
+# Encoders: 0 SELECT, 1 ALGORITHM, 2..5 KNOB1..4. Buttons: 2 FX, 6 EDIT, 11 SEQ.
+100 btn 11
+200 keys 0x80
+300 keys 0
+1500 shot
+1600 btn 6
+1700 enc 2 10
+2600 shot
+2700 btn 6
+2800 enc 2 32
+3800 shot
+3900 btn 6
+4000 enc 2 1
+4100 enc 3 40
+4600 shot
+4800 enc 0 1
+5000 btn 2
+6400 shot
+6500 end
