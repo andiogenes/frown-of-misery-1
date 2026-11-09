@@ -26,9 +26,10 @@ BUILD = ROOT / "build"
 REPO = "https://github.com/andiogenes/frown-of-misery-1"
 EMU_REPO = "https://github.com/joakimeriksson/fm1-emu"
 
-ABOUT = ("Mutable Instruments' Braids on the FM-1: 48 macro-oscillator shapes, four voices, TIMBRE and COLOR on "
-         "KNOB 1 and 2, attack and release on KNOB 3 and 4, the shape on ALGORITHM. This page runs the newest build "
-         "from the repository, not a release.")
+ABOUT = ("Mutable Instruments' Braids, Rings, Clouds and Marbles on the FM-1. SELECT: the engine (Braids, Rings, "
+         "Braids into Rings); FX: Clouds after it, REC its FREEZE; SEQ: Marbles before it, playing the notes. EDIT "
+         "steps through the modules' pages, KNOB 1-4 turn what the screen shows, ALGORITHM picks Braids' shape, "
+         "Rings' model or Marbles' T model. This page runs the newest build from the repository, not a release.")
 
 
 def entry(fid, pkg, version, short):
@@ -73,15 +74,19 @@ def main():
     short = a.sha[:7]
     version = "dev"                     # (not a release: the commit says which build)
     # the emulator's catalogs: this build only, the default. Paths are relative to each page.
+    # fm1-emu keeps a firmware's package in the browser (IndexedDB) by its id, and updates it only on request: so
+    # each build is its own id (a new one is fetched, not the copy kept from the last visit), and its package URL
+    # carries the commit (past GitHub Pages' 10-minute HTTP cache). ?fw=frown, unknown, opens the default: this one.
+    fid = f"frown-{short}"
     (out / "emu/firmwares.json").write_text(json.dumps({
         "note": f"Frown of Misery's own copy of fm1-emu ({EMU_REPO}): this build only.",
-        "default": "frown",
-        "firmwares": [entry("frown", "../frown.fwsc", version, short)],
+        "default": fid,
+        "firmwares": [entry(fid, f"../frown.fwsc?v={short}", version, short)],
     }, indent=1) + "\n")
     (out / "emu/smk37/firmwares.json").write_text(json.dumps({
         "note": f"Frown of Misery's own copy of fm1-emu ({EMU_REPO}): this build only, for the SMK-37.",
-        "default": "frown",
-        "firmwares": [entry("frown", "../../frown-smk37.fwsc", version, short)],
+        "default": fid,
+        "firmwares": [entry(fid, f"../../frown-smk37.fwsc?v={short}", version, short)],
     }, indent=1) + "\n")
 
     media = out / "media"
