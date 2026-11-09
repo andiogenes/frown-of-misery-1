@@ -4,6 +4,7 @@
 //
 //   port_rings OUT.wav [model=0] [poly=1|2|4] [structure= brightness= damping= position=] [notes=60,64] [every=1]
 //              [seconds=4]                                  (the same keys and defaults as ref_rings)
+//              [in=FILE.wav]     an external exciter (as ref_rings': mono or the left channel, at 44.1 kHz)
 //              [refrate=48000]   the reference's rate: a strike lands where ref_rings' does, at the first of Rings'
 //                                24-sample blocks past each period at that rate, converted to seconds
 #include <cstdio>
@@ -26,6 +27,7 @@ int main(int argc, char** argv)
 {
     if (argc < 2) { std::fprintf(stderr, "usage: %s OUT.wav [poly= structure= brightness= damping= position= notes= every= seconds=]\n", argv[0]); return 2; }
     int poly = 1, refrate = 48000, model = 0;
+    const char* in_path = nullptr;
     float structure = 0.25f, brightness = 0.5f, damping = 0.5f, position = 0.3f, every = 1.0f, seconds = 4.0f;
     std::vector<int> notes = {60};
     for (int i = 2; i < argc; ++i) {
@@ -52,7 +54,14 @@ int main(int argc, char** argv)
                 while (*p && *p != ',') ++p;
                 if (*p == ',') ++p;
             }
-        } else { std::fprintf(stderr, "unknown key: %s\n", k.c_str()); return 2; }
+        } else if (k == "in") in_path = argv[i] + 3;
+        else { std::fprintf(stderr, "unknown key: %s\n", k.c_str()); return 2; }
+    }
+    std::vector<int16_t> ext;
+    int ext_ch = 1, ext_rate = 44100;
+    if (in_path && !fomref::read_wav(in_path, &ext, &ext_ch, &ext_rate)) {
+        std::fprintf(stderr, "%s: not a 16-bit WAV\n", in_path);
+        return 1;
     }
     modal.Init();
     modal.set_polyphony(poly);
@@ -85,8 +94,14 @@ int main(int argc, char** argv)
         if (next_strike < strikes.size() && strikes[next_strike] - t < n) n = strikes[next_strike] - t;
         if (n > total - t) n = total - t;
         std::fill(buf.begin(), buf.end(), 0);
-        if (model == 0) modal.Render(patch, 32767, buf.data(), (size_t)n);
-        else strings.Render(patch, 32767, buf.data(), (size_t)n);
+        std::vector<int32_t> inq((size_t)n);                    // the external input, Q24 (sample for sample)
+        for (long i = 0; i < n; ++i) {
+            long j = (t + i) * ext_ch;
+            inq[i] = j < (long)ext.size() ? (int32_t)ext[j] << 9 : 0;
+        }
+        const int32_t* inp = in_path ? inq.data() : nullptr;
+        if (model == 0) modal.Render(patch, 32767, buf.data(), (size_t)n, inp);
+        else strings.Render(patch, 32767, buf.data(), (size_t)n, inp);
         for (long i = 0; i < n * 2; ++i) {
             int32_t v = buf[i];
             out.push_back((int16_t)(v > 32767 ? 32767 : v < -32768 ? -32768 : v));

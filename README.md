@@ -18,11 +18,11 @@ the screen and flash storage. The Braids code and its 44.1 kHz adapter come from
 | Control | What it does |
 | --- | --- |
 | keys | play: 4 voices sharing one shape, each with its own pitch, or MONO (legato, last note wins). Notes also go out over USB-MIDI. |
-| SELECT | the engine: BRAIDS or RINGS |
-| FX | Clouds after the engine, or not. The boxes under the parameters show the route. MIDI program change 1–4: BRAIDS, RINGS, BRAIDS → CLOUDS, RINGS → CLOUDS |
+| SELECT | the engine: BRAIDS, RINGS, or BRAIDS → RINGS (Braids into Rings' audio input instead of its exciter: a note plays Braids and picks Rings' voice and note; Braids' LEVEL drives Rings, Rings' PART LEVEL is its output) |
+| FX | Clouds after the engine, or not. The plates and cables under the parameters show the route. MIDI program change 1–6: BRAIDS, RINGS, BRAIDS → CLOUDS, RINGS → CLOUDS, BRAIDS → RINGS, BRAIDS → RINGS → CLOUDS |
 | REC | Clouds' FREEZE: the buffer stops recording and the grains keep playing what it holds (the CLOUDS box fills) |
 | ALGORITHM | BRAIDS: the shape, 48 of them, from CSAW to QUESTION MARK. RINGS: the model, MODAL RESONATOR, SYMPATHETIC STRINGS or STRING |
-| EDIT | the next page of parameters; KNOB 1–4 turn the four shown on screen |
+| EDIT | the next page of parameters, through the route's modules in order; KNOB 1–4 turn the four shown on screen. ALGORITHM turns Rings' model on Rings' pages, Braids' shape elsewhere |
 | page OSC | TIMBRE, COLOR (what they do depends on the shape, and the screen says), FINE tune ±50 cents, LEVEL |
 | page AMP | ATTACK, RELEASE (0 ms … 24 s), GLIDE (off … 24 s), VOICES (POLY 4 / MONO) |
 | RINGS page RES | STRUCTURE, BRIGHTNESS, DAMPING, POSITION: Rings' four knobs. STRUCTURE tunes the sympathetic strings and sets the string's dispersion. |
@@ -108,8 +108,10 @@ needs a **fixed-point rewrite**, not a port.
    (32 grains): 41 % of the audio budget, 19 % with no grains; so after Rings it plays at most 16 grains at once
    (8 after the sympathetic strings), and fewer for a while if the audio interrupt goes over 85 %. Left: the
    stretch, looping delay and spectral modes, and Clouds' low-fidelity quality (half the rate: half the CPU).
-4. Routes like an FM synth's algorithms: Braids → Clouds and Rings → Clouds are in (FX). Next, Braids → Rings
-   (Braids as Rings' exciter, through its audio input) and Braids → Rings → Clouds.
+4. Routes like an FM synth's algorithms: Braids → Clouds, Rings → Clouds, Braids → Rings and Braids → Rings → Clouds.
+   Braids → Rings is Rings' own external input (no pulse or pluck, its input excitation filter, every string driven):
+   `make -C dsp/ref port` measures it against Rings fed the same input, 48-72 dB SNR. After Braids → Rings, Clouds
+   runs LO with 8 grains at most (HI does not fit).
 
 ## Licence
 

@@ -37,6 +37,16 @@ uint32_t udiv64(uint64_t n, uint32_t d)
     return q;
 }
 
+uint64_t st_ratio_q30(int64_t semis_q24);                             /* (below, with the string models) */
+
+/* Part::Process's excitation cutoff for an external input (internal_exciter off): 0.4 * SemitonesToRatio((cut - 1) *
+ * 108), cut = b (2 - b) Q16; f / fs Q32, at most 0.499 */
+uint32_t external_cutoff(uint32_t cut)
+{
+    uint64_t f = ((uint64_t)1717986918u * st_ratio_q30((((int64_t)cut - 65536) * 108) << 8)) >> 30;
+    return f > 2143188681u ? 2143188681u : (uint32_t)f;
+}
+
 inline int32_t mulq(int32_t a, int32_t b, int shift) { return (int32_t)(((int64_t)a * b) >> shift); }
 inline int32_t mulhi(int32_t a, int32_t b) { return (int32_t)(((int64_t)a * b) >> 32); }
 
@@ -179,13 +189,21 @@ int32_t ModalVoice::ComputeFilters(const RingsPatch& patch)
     return num_modes;
 }
 
-void ModalVoice::Render(const RingsPatch& patch, bool active, int32_t* odd, int32_t* even, size_t n)
+void ModalVoice::Render(const RingsPatch& patch, bool active, bool external, const int32_t* in, int32_t* odd,
+                        int32_t* even, size_t n)
 {
     /* ---- the excitation: Part::Process's cutoff, RenderModalVoice's pulse, the excitation filter */
     uint32_t b = patch.brightness;
     uint32_t cut = (uint32_t)(((uint64_t)b * (131072u - b)) >> 16);   /* b (2 - b), Q16 */
     uint32_t fc;                                                       /* the excitation filter's cutoff, Q32 */
-    if (active) {
+    if (n > 32) n = 32;
+    if (external) {
+        fc = active ? external_cutoff(cut) : 973915u;
+        if (in) {                                                      /* sound coming in wakes the voice */
+            for (size_t k = 0; k < n; ++k)
+                if (in[k]) { idle_ = false; silent_ = 0; break; }
+        }
+    } else if (active) {
         /* frequency * 2^((cut - 0.5) * 96 / 12) */
         uint32_t ratio = exp2_q16((int32_t)(((int64_t)cut - 32768) * 8));
         uint64_t f = ((uint64_t)frequency_ * ratio) >> 16;
@@ -195,7 +213,7 @@ void ModalVoice::Render(const RingsPatch& patch, bool active, int32_t* odd, int3
     }
     if (fc < 97392u) fc = 97392u;                                      /* >= 1 Hz: the pulse stays in 64 bits */
 
-    if (strike_ && active) {
+    if (strike_ && active && !external) {
         /* the pulse, 0.25 * SemitonesToRatio(24 fc^2) / fc = 0.25 * 2^(2 fc^2) / fc, injected as the filter's first
          * sample (no overflow, any fc) */
         uint64_t fc2 = ((uint64_t)fc * fc) >> 32;                      /* Q32 */
@@ -251,18 +269,24 @@ void ModalVoice::Render(const RingsPatch& patch, bool active, int32_t* odd, int3
 
     /* ---- the excitation filter's coefficients for this block */
     int32_t eg = tan_dirty_q24(fc);
-    const int64_t er = 11184811;
+    const int64_t er = external ? 20971520 : 11184811;                 /* 1 / q: q 0.8 for an input, 1.5 inside */
     int64_t eden = kQ24 + ((er * eg) >> 24) + (((int64_t)eg * eg) >> 24);
     int64_t eh = udiv64((uint64_t)1 << 48, (uint32_t)eden);
-    bool ex_live = ex_s1_ || ex_s2_ || has_pending_;
+    bool ex_live = ex_s1_ || ex_s2_ || has_pending_ || in;
 
     /* ---- the resonators' input for this run (n <= 32): the excitation filter's output * 0.125 */
     int32_t xin[32];
     bool any_input = false;
-    if (n > 32) n = 32;
     for (size_t k = 0; k < n; ++k) {
         int32_t x = 0;                                                 /* Q24 */
-        if (has_pending_) {
+        if (in) {                                                      /* the input through the filter */
+            int64_t hp = (((int64_t)in[k] - (((er + eg) * ex_s1_) >> 24) - ex_s2_) * eh) >> 24;
+            int64_t bp = ((eg * hp) >> 24) + ex_s1_;
+            ex_s1_ = ((eg * hp) >> 24) + bp;
+            int64_t lp = ((eg * bp) >> 24) + ex_s2_;
+            ex_s2_ = ((eg * bp) >> 24) + lp;
+            x = (int32_t)lp;
+        } else if (has_pending_) {
             x = pending_;
             has_pending_ = false;
         } else if (ex_live) {
@@ -339,6 +363,7 @@ void RingsModal::Init()
     polyphony_ = 0;
     active_ = 0;
     fine_ = 0;
+    external_ = false;
     peak_ = kQ24 / 2;                                                  /* Limiter::Init */
     set_polyphony(1);
 }
@@ -369,7 +394,7 @@ void RingsModal::Strike(uint32_t note, int32_t fine, uint32_t velocity)
     if (polyphony_ > 1) active_ = (active_ + 1) % polyphony_;
     note_[active_] = (uint8_t)(note > 127u ? 127u : note);
     voice_[active_].set_frequency(note_freq(note_[active_], fine_));
-    voice_[active_].Strike((int32_t)(velocity > 127u ? 127u : velocity) * 258);
+    if (!external_) voice_[active_].Strike((int32_t)(velocity > 127u ? 127u : velocity) * 258);   /* (else: no pulse) */
 }
 
 bool RingsModal::sounding() const
@@ -379,20 +404,23 @@ bool RingsModal::sounding() const
     return false;
 }
 
-void RingsModal::Render(const RingsPatch& patch, int32_t level, int32_t* out, size_t n)
+void RingsModal::Render(const RingsPatch& patch, int32_t level, int32_t* out, size_t n, const int32_t* in)
 {
+    external_ = in != 0;
     for (size_t s0 = 0; s0 < n; s0 += 32) {
         size_t m = n - s0 < 32 ? n - s0 : 32;
         for (size_t k = 0; k < m; ++k) odd_[k] = even_[k] = 0;
         for (int32_t v = 0; v < polyphony_; ++v) {
             voice_[v].set_frequency(note_freq(note_[v], fine_));
+            /* an input goes to the active voice only (Part::Process: the others get silence) */
+            const int32_t* vin = in && v == active_ ? in + s0 : 0;
             if (polyphony_ == 1) {
-                voice_[v].Render(patch, v == active_, odd_, even_, m);
+                voice_[v].Render(patch, v == active_, external_, vin, odd_, even_, m);
             } else {
                 /* odd and even voices to their own outputs: out_buffer - aux_buffer */
                 int32_t o[32], e[32];
                 for (size_t k = 0; k < m; ++k) o[k] = e[k] = 0;
-                voice_[v].Render(patch, v == active_, o, e, m);
+                voice_[v].Render(patch, v == active_, external_, vin, o, e, m);
                 int32_t* d = (v & 1) ? even_ : odd_;
                 for (size_t k = 0; k < m; ++k) d[k] += o[k] - e[k];
             }
@@ -983,7 +1011,10 @@ void RingsStrings::Init(int32_t* lines, int32_t* stretch)
     /* Part::Init: every note 0 above the tonic (C0); set_polyphony gives a new voice note_[0] + 0.05 i. The idle
      * voices' notes matter: their strings run slowed down below 21.6 Hz, and with dispersion every step they take
      * draws from the random generator the plucker shares. */
-    for (int32_t i = 0; i < kMaxPolyphony; ++i) { note_[i] = 12 << 16; dc_x_[i] = dc_y_[i] = 0; }
+    for (int32_t i = 0; i < kMaxPolyphony; ++i) { note_[i] = 12 << 16; dc_x_[i] = dc_y_[i] = 0; ex_s1_[i] = ex_s2_[i] = 0; }
+    external_ = false;
+    strum_late_ = false; late_note_ = 60; late_vel_ = 0;
+    for (int32_t k = 0; k < kRingsBlock; ++k) ext_in_[k] = 0;
     strum_pending_ = false;
     peak_ = kQ24 / 2;
     pos_ = kRingsBlock;
@@ -1075,12 +1106,23 @@ void RingsStrings::RenderBlock(const RingsPatch& patch)
     if (dirty_) Configure();
     bool strum = strum_pending_;
     uint32_t strum_vel = strum_vel_;
+    uint8_t strum_note = strum_note_;
     strum_pending_ = false;
+    if (external_) {                                                   /* the strike a block late, as the input */
+        bool next = strum;
+        uint8_t nn = strum_note;
+        uint32_t nv = strum_vel;
+        strum = strum_late_; strum_note = late_note_; strum_vel = late_vel_;
+        strum_late_ = next; late_note_ = nn; late_vel_ = (uint8_t)nv;
+    }
     if (strum) {                                                       /* Part::Process on a strum */
         if (polyphony_ > 1) active_ = (active_ + 1) % polyphony_;
-        note_[active_] = (int32_t)strum_note_ << 16;
+        note_[active_] = (int32_t)strum_note << 16;
         silent_ = 0;
     }
+    if (external_)                                                     /* sound coming in wakes it */
+        for (int32_t k = 0; k < kRingsBlock; ++k)
+            if (ext_in_[k]) { silent_ = 0; break; }
     if (silent_ > 88200u) {                                            /* two seconds under -96 dB: asleep */
         for (int32_t k = 0; k < kRingsBlock * 2; ++k) out_[k] = 0;
         silent_ += kRingsBlock;
@@ -1117,14 +1159,36 @@ void RingsStrings::RenderBlock(const RingsPatch& patch)
         } else {
             freqs[0] = (int32_t)frequency;
         }
-        /* the input: the plucker's burst (the active voice's, on a strum), through the input's DC blocker */
+        /* the input: the plucker's burst (the active voice's, on a strum), through the input's DC blocker; or the
+         * external input (the active voice's alone), * 1 / sqrt(2 strings), through the excitation filter */
         int32_t input[kRingsBlock];
-        if (strum && v == active_) {
-            uint64_t c8 = (uint64_t)fc * 8u;
-            int32_t level = strum_vel == 127u ? 32768 : (int32_t)strum_vel * 258;
-            plucker_[v].Trigger(frequency, c8 > 0xFFFFFFFFull ? 0xFFFFFFFFu : (uint32_t)c8, pos, level);
+        if (external_) {
+            if (v == active_) fc = external_cutoff(cut);
+            static const int32_t kGain[4] = {46341, 32768, 23170, 16384};    /* 1 / sqrt(2 n), n 1 2 4 8, Q16 */
+            int32_t gain = kGain[num_strings == 8 ? 3 : num_strings == 4 ? 2 : num_strings == 2 ? 1 : 0];
+            int32_t g = tan_dirty_q24(fc);
+            const int64_t r = 20971520;                                /* 1 / 0.8, Q24 */
+            int64_t den = kQ24 + ((r * g) >> 24) + (((int64_t)g * g) >> 24);
+            int64_t h = udiv64((uint64_t)1 << 48, (uint32_t)den);
+            int64_t s1 = ex_s1_[v], s2 = ex_s2_[v];
+            for (int32_t k = 0; k < n; ++k) {
+                int64_t x = v == active_ ? ((int64_t)ext_in_[k] * gain) >> 16 : 0;
+                int64_t hp = ((x - (((r + g) * s1) >> 24) - s2) * h) >> 24;
+                int64_t bp = ((g * hp) >> 24) + s1;
+                s1 = ((g * hp) >> 24) + bp;
+                int64_t lp = ((g * bp) >> 24) + s2;
+                s2 = ((g * bp) >> 24) + lp;
+                input[k] = (int32_t)lp;
+            }
+            ex_s1_[v] = s1; ex_s2_[v] = s2;
+        } else {
+            if (strum && v == active_) {
+                uint64_t c8 = (uint64_t)fc * 8u;
+                int32_t level = strum_vel == 127u ? 32768 : (int32_t)strum_vel * 258;
+                plucker_[v].Trigger(frequency, c8 > 0xFFFFFFFFull ? 0xFFFFFFFFu : (uint32_t)c8, pos, level);
+            }
+            plucker_[v].Process(input, n);
         }
-        plucker_[v].Process(input, n);
         for (int32_t k = 0; k < n; ++k) {
             int32_t x = input[k];
             dc_y_[v] = dc_y_[v] - mulr(dc_y_[v], kDcPartLeak, 30) + ((int64_t)(x - dc_x_[v]) << 16);
@@ -1149,7 +1213,8 @@ void RingsStrings::RenderBlock(const RingsPatch& patch)
             uint32_t sb = b, sd = dmp, sp = pos;
             int32_t glide = 1 << 30;
             const int32_t* in = input;
-            if (st > 0) {                                              /* the sympathetic strings */
+            if (st > 0 && !external_) {                                /* the sympathetic strings (with an input,
+                                                                          all strings take it as it is) */
                 sb = (uint32_t)(((uint64_t)sb * (131072u - sb)) >> 16);
                 sb = (uint32_t)(((uint64_t)sb * (131072u - sb)) >> 16);
                 sd = 45875u + (uint32_t)(((uint64_t)dmp * 17695u) >> 16);   /* .7 + d * .27 */
@@ -1202,12 +1267,15 @@ void RingsStrings::RenderBlock(const RingsPatch& patch)
     if (peak_out > 0) silent_ = 0; else silent_ += (uint32_t)n;
 }
 
-void RingsStrings::Render(const RingsPatch& patch, int32_t level, int32_t* out, size_t n)
+void RingsStrings::Render(const RingsPatch& patch, int32_t level, int32_t* out, size_t n, const int32_t* in)
 {
     size_t k = 0;
+    external_ = in != 0;
     while (k < n) {
         if (pos_ >= kRingsBlock) { RenderBlock(patch); pos_ = 0; }
         while (k < n && pos_ < kRingsBlock) {
+            /* the input, collected along the block played out: the next block takes it (24 samples late) */
+            ext_in_[pos_] = in ? in[k] : 0;
             out[2 * k] += mulq(out_[2 * pos_], level, 15);
             out[2 * k + 1] += mulq(out_[2 * pos_ + 1], level, 15);
             ++k; ++pos_;

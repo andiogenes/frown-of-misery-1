@@ -1,0 +1,21 @@
+# Braids > Rings: program change 5 (BRAIDS > RINGS), a chord on CSAW into Rings' modal resonator, EDIT to Rings' RES
+# page, then the sympathetic strings (ALGORITHM there), then FX: Clouds after Rings.
+# Encoders: 1 ALGORITHM, 2..5 KNOB1..4. Buttons: 2 FX, 6 EDIT.
+100 midi 0xC0 4 0
+300 keys 0x891
+1300 keys 0
+1500 shot
+1700 btn 6
+1800 btn 6
+2000 keys 0x80
+2600 keys 0
+2800 shot
+3000 enc 1 1
+3200 keys 0x891
+4200 keys 0
+4400 shot
+4600 btn 2
+4800 keys 0x91
+5600 keys 0
+5800 shot
+6500 end

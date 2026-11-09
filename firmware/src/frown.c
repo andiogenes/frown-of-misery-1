@@ -4,7 +4,8 @@
  * This file is the app; the sound is dsp/engine/fom_engine.cc; everything below platform.c is Dinghy's, unchanged.
  *
  *   keys       play; 4 voices paraphonic (one shape, a pitch each) or MONO (legato, last note wins); out over USB-MIDI
- *   SELECT     the engine: BRAIDS or RINGS
+ *   SELECT     the engine: BRAIDS, RINGS, or BRAIDS > RINGS (Braids into Rings' audio input: a note plays Braids and
+ *              picks Rings' voice and note; Braids' LEVEL drives Rings, Rings' PART LEVEL is its output)
  *   FX         Clouds after the engine, or not (the strip under the info line shows the route)
  *   REC        Clouds' FREEZE: the buffer stops recording, the grains keep playing what it holds
  *   ALGORITHM  Braids' shape, 48 of them; Rings' model: MODAL RESONATOR, SYMPATHETIC STRINGS, STRING
@@ -23,7 +24,8 @@
  *   PRESETS    the MIDI channel: OMNI (in: all, out: 1) or 1..16
  *   MASTER     the volume (platform.c)
  *   MIDI in    notes from USB or the TRS jack, with their velocity, pitch bend +-2; a MIDI clock shows its tempo;
- *              program change 0..3 (programs 1..4 in most software): BRAIDS, RINGS, BRAIDS > CLOUDS, RINGS > CLOUDS
+ *              program change 0..5 (programs 1..6 in most software): BRAIDS, RINGS, BRAIDS > CLOUDS, RINGS > CLOUDS,
+ *              BRAIDS > RINGS, BRAIDS > RINGS > CLOUDS
  *   SMK-37     the keys with velocity, the outer keys, the pads (white keys F3..G5), the pitch wheel (+-2 semitones)
  *   the screen the engine, the shape, the page, the four parameters, the last note, CPU load of the audio interrupt
  *
@@ -65,7 +67,7 @@ static void app_audio(int32_t *out, uint32_t n)
 }
 
 /* ---- what survives a power-off: the panel, and every parameter of the engine */
-#define SET_VERSION 4u
+#define SET_VERSION 5u
 enum { V_POLY, V_MONO };
 static struct {
     uint8_t version, oct, ch, engine, page, voices, clouds, pad;
@@ -97,44 +99,71 @@ static void set_apply(void)
     for (p = 0; p < FOM_NPARAM; p++) fom_set_param(p, set.p[p]);
 }
 
-/* ---- the pages: what KNOB 1..4 turn, per engine. Parameters past FOM_NPARAM are the app's own. */
+/* ---- the pages: what KNOB 1..4 turn, per module; a route's pages are its modules' in order. Parameters past
+ * FOM_NPARAM are the app's own. */
 enum { A_VOICES = FOM_NPARAM, A_NONE = 255 };
-#define NPAGE_MAX 4u                            /* an engine's; Clouds' three follow them */
+enum { M_BRAIDS, M_RINGS, M_CLOUDS, M_N };
 typedef struct {
-    const char *name;
+    const char *page[3];
     uint8_t npages;
-    const char *page[NPAGE_MAX];
-    uint8_t knob[NPAGE_MAX][4];
-} engine_ui_t;
-static const engine_ui_t ENGINES[FOM_NENGINES] = {
-    {"BRAIDS", 2, {"OSC", "AMP"},
+    uint8_t knob[3][4];
+} module_ui_t;
+static const module_ui_t MODULES[M_N] = {
+    {{"OSC", "AMP"}, 2,
      {{FOM_P_TIMBRE, FOM_P_COLOR, FOM_P_FINE, FOM_P_LEVEL},
       {FOM_P_ATTACK, FOM_P_RELEASE, FOM_P_GLIDE, A_VOICES}}},
-    {"RINGS", 2, {"RES", "PART"},
+    {{"RES", "PART"}, 2,
      {{FOM_P_STRUCTURE, FOM_P_BRIGHTNESS, FOM_P_DAMPING, FOM_P_POSITION},
-      {FOM_P_POLY, FOM_P_FINE, FOM_P_LEVEL, A_NONE}}},
-};
-static const engine_ui_t CLOUDS_UI = {"CLOUDS", 3, {"GRAIN", "MIX", "PITCH"},
+      {FOM_P_POLY, FOM_P_FINE, FOM_P_R_LEVEL, A_NONE}}},
+    {{"GRAIN", "MIX", "PITCH"}, 3,
      {{FOM_P_C_POSITION, FOM_P_C_SIZE, FOM_P_C_DENSITY, FOM_P_C_TEXTURE},
       {FOM_P_C_BLEND, FOM_P_C_SPREAD, FOM_P_C_FEEDBACK, FOM_P_C_REVERB},
-      {FOM_P_C_PITCH, FOM_P_C_QUALITY, A_NONE, A_NONE}}};
-static const engine_ui_t *ui(void) { return &ENGINES[set.engine]; }
-/* the pages of the route: the engine's, then Clouds' if it follows */
-static uint32_t npages(void) { return ui()->npages + (set.clouds ? CLOUDS_UI.npages : 0u); }
+      {FOM_P_C_PITCH, FOM_P_C_QUALITY, A_NONE, A_NONE}}},
+};
+/* the route's modules in order: the engine's one or two, then Clouds if it follows */
+static uint32_t route_modules(uint8_t *m)
+{
+    uint32_t n = 0;
+    if (set.engine != FOM_E_RINGS) m[n++] = M_BRAIDS;
+    if (set.engine != FOM_E_BRAIDS) m[n++] = M_RINGS;
+    if (set.clouds) m[n++] = M_CLOUDS;
+    return n;
+}
+static uint32_t npages(void)
+{
+    uint8_t m[3];
+    uint32_t i, n = route_modules(m), p = 0;
+    for (i = 0; i < n; i++) p += MODULES[m[i]].npages;
+    return p;
+}
+/* page i of the route: its module and its index there */
+static uint32_t page_module(uint32_t i, uint32_t *local)
+{
+    uint8_t m[3];
+    uint32_t k, n = route_modules(m);
+    for (k = 0; k < n; k++) {
+        if (i < MODULES[m[k]].npages) { if (local) *local = i; return m[k]; }
+        i -= MODULES[m[k]].npages;
+    }
+    if (local) *local = 0;
+    return m[0];
+}
 static const char *page_name(uint32_t i)
 {
-    return i < ui()->npages ? ui()->page[i] : CLOUDS_UI.page[i - ui()->npages];
+    uint32_t l, m = page_module(i, &l);
+    return MODULES[m].page[l];
 }
 static uint32_t page_knob(uint32_t i, uint32_t k)
 {
-    return i < ui()->npages ? ui()->knob[i][k] : CLOUDS_UI.knob[i - ui()->npages][k];
+    uint32_t l, m = page_module(i, &l);
+    return MODULES[m].knob[l][k];
 }
 
 static const char *param_name(uint32_t p)
 {
     if (p == A_VOICES) return "VOICES";
-    if (set.engine == FOM_E_BRAIDS && p == FOM_P_TIMBRE) return FM1_SHAPE_TIMBRE[set.p[FOM_P_SHAPE]];
-    if (set.engine == FOM_E_BRAIDS && p == FOM_P_COLOR) return FM1_SHAPE_COLOR[set.p[FOM_P_SHAPE]];
+    if (p == FOM_P_TIMBRE) return FM1_SHAPE_TIMBRE[set.p[FOM_P_SHAPE]];
+    if (p == FOM_P_COLOR) return FM1_SHAPE_COLOR[set.p[FOM_P_SHAPE]];
     return fom_param_info(p)->name;
 }
 
@@ -185,8 +214,8 @@ static void play(uint32_t note, uint32_t vel)
 {
     uint32_t v, pick = 0, best = 0xFFFFFFFFu;
     if (note > 127u || !vel) return;
-    if (set.engine == FOM_E_RINGS) fom_strike(note, vel);   /* (voice[] below only keeps the keys lit) */
-    else if (set.voices == V_MONO) { mono_on(note, vel); return; }
+    if (set.engine != FOM_E_BRAIDS) fom_strike(note, vel);  /* (Rings alone: voice[] below only keeps keys lit) */
+    if (set.engine != FOM_E_RINGS && set.voices == V_MONO) { mono_on(note, vel); return; }
     for (v = 0; v < FOM_NV; v++) {              /* the same note, else a free voice, else the oldest */
         uint32_t score = voice[v].note == note && voice[v].on ? 0u                  /* the same note, held */
                        : voice[v].on ? 0x80000000u + voice[v].age                   /* held: the oldest goes */
@@ -312,8 +341,7 @@ static void cv_pill(int32_t x, int32_t y, int32_t w, int32_t h, uint16_t c, uint
 }
 
 /* the module a page belongs to: the engine's own pages, then Clouds' */
-enum { M_BRAIDS, M_RINGS, M_CLOUDS };
-static uint32_t shown_module(void) { return set.page >= ui()->npages ? M_CLOUDS : set.engine == FOM_E_RINGS ? M_RINGS : M_BRAIDS; }
+static uint32_t shown_module(void) { return page_module(set.page, 0); }
 
 /* Braids' four-character display, its names from braids/settings.cc (MIT; its own wave glyphs drawn as ASCII) */
 static const char *const BRAIDS_CODE[FM1_NSHAPES] = {
@@ -397,19 +425,22 @@ static void draw_head(void)                     /* the module's top: name, subti
     cv_blit(0, Y_HEAD);
 }
 
-static void draw_tabs(void)                     /* the pages: the one shown dark and underlined */
+static void draw_tabs(void)                     /* this module's pages (the one shown underlined); < > more modules */
 {
-    uint32_t i, w = 0, n = npages(), gap = n > 3u ? 10u : 24u;
+    uint32_t i, first = set.page, n = npages(), w = 0, m = shown_module();
     int32_t x;
-    for (i = 0; i < n; i++) w += text_w(&FONT_S, page_name(i)) + (i ? gap : 0u);
+    while (first > 0 && page_module(first - 1u, 0) == m) first--;
     cv_begin(240, 18, C_PANEL);
+    for (i = first; i < n && page_module(i, 0) == m; i++) w += text_w(&FONT_S, page_name(i)) + (i > first ? 24u : 0u);
     x = (240 - (int32_t)w) / 2;
-    for (i = 0; i < n; i++) {
+    for (i = first; i < n && page_module(i, 0) == m; i++) {
         uint32_t on = i == set.page;
         int32_t x1 = cv_text_on(x, 0, &FONT_S, page_name(i), on ? C_INK : C_INK2, C_PANEL);
         if (on) cv_rect(x, 16, x1 - x, 2, C_INK);
-        x = x1 + (int32_t)gap;
+        x = x1 + 24;
     }
+    if (first > 0) cv_text_on(6, 0, &FONT_S, "<", C_INK2, C_PANEL);
+    if (i < n) cv_text_on(226, 0, &FONT_S, ">", C_INK2, C_PANEL);
     cv_blit(0, Y_TABS);
 }
 
@@ -468,7 +499,7 @@ static void draw_knob(uint32_t k)               /* knob k (KNOB 1..4) on this pa
             q = put(put_u(q, 1u << (uint32_t)v), v ? " VOICES" : " VOICE");
             break;
         case FOM_K_QUALITY:
-            q = put(q, fom_clouds_lofi() ? (v ? "LO" : "LO AUTO") : "HI");
+            q = put(q, fom_clouds_lofi() ? (v ? "LO" : "LO AUTO") : "HI");   /* (AUTO: the route needs it) */
             break;
         case FOM_K_SEMI:
             *q++ = v < 0 ? '-' : v > 0 ? '+' : ' ';
@@ -521,7 +552,7 @@ static void draw_plate(int32_t x, int32_t y, int32_t w, const char *name, uint16
     cv_rect(x, y, w, 30, C_INK2);
     cv_rect(x + 1, y + 1, w - 2, 28, bg);
     cv_rect(x + 1, y + 1, w - 2, 2, C_BAND);    /* (a hint of the band) */
-    cv_text_mid(x + w / 2, y + 7, &FONT_S, name, bg == C_DARK ? C_WHITE : C_INK, bg);
+    cv_text_mid(x + w / 2, y + 4, &FONT_S, name, bg == C_DARK ? C_WHITE : C_INK, bg);
 }
 static void draw_jack(int32_t cx, int32_t cy)
 {
@@ -542,24 +573,41 @@ static void draw_cable(int32_t x0, int32_t x1, int32_t y, uint16_t c)   /* a sag
 }
 static void draw_route(void)
 {
-    int32_t y = 3, x = 6, w = 76, cx;
+    static const char *const NAME[3] = {"Braids", "Rings", "Clouds"};
+    static const uint16_t CABLE[3] = {C_PINK, RGB(240, 150, 20), C_TEAL};
+    uint8_t m[3];
+    const char *label[3];
+    int32_t w[3], x, gap, total = 0, jack_out = 0, y = 3;
+    uint32_t i, n = route_modules(m);
+    for (i = 0; i < n; i++) {
+        label[i] = m[i] == M_CLOUDS && fom_clouds_lofi() ? "Clouds lo" : NAME[m[i]];
+        w[i] = (int32_t)text_w(&FONT_S, label[i]) + 12;
+        total += w[i];
+    }
+    /* the plates, then the OUT box (with three plates, the last cable runs off the edge to it), cables between */
+    gap = (240 - 12 - (n < 3u ? 36 : 4) - total) / (int32_t)n;
+    if (gap > 26) gap = 26;
     cv_begin(240, 38, C_PANEL);
     cv_rect(0, 0, 240, 1, C_BAND);
-    draw_plate(x, y, w, set.engine == FOM_E_RINGS ? "Rings" : "Braids", C_PANEL);
-    draw_jack(x + w - 8, y + 23);
-    cx = x + w - 8;
-    if (set.clouds) {
-        int32_t xc = 102;
-        draw_plate(xc, y, w, fom_clouds_lofi() ? "Clouds lo" : "Clouds", C_PANEL);
-        draw_jack(xc + 8, y + 23);
-        draw_jack(xc + w - 8, y + 23);
-        if (frozen) cv_disc(xc + w - 10, y + 8, 3, C_PINK);
-        draw_cable(cx, xc + 8, y + 22, C_PINK);
-        cx = xc + w - 8;
+    x = 6;
+    for (i = 0; i < n; i++) {
+        draw_plate(x, y, w[i], label[i], C_PANEL);
+        if (i) {
+            draw_jack(x + 7, y + 24);
+            draw_cable(jack_out, x + 7, y + 23, CABLE[i - 1]);
+        }
+        if (m[i] == M_CLOUDS && frozen) cv_disc(x + w[i] - 6, y + 7, 3, C_PINK);
+        draw_jack(x + w[i] - 8, y + 24);
+        jack_out = x + w[i] - 8;
+        x += w[i] + gap;
     }
-    draw_plate(198, y, 36, "OUT", C_DARK);
-    draw_jack(216, y + 23);
-    draw_cable(cx, 216, y + 22, C_TEAL);
+    if (n < 3u) {
+        draw_plate(198, y, 36, "OUT", C_DARK);
+        draw_jack(216, y + 24);
+        draw_cable(jack_out, 216, y + 23, CABLE[2]);
+    } else {
+        draw_cable(jack_out, 238, y + 23, CABLE[2]);
+    }
     cv_blit(0, Y_ROUTE);
 }
 
@@ -629,8 +677,11 @@ static void midi_in(void)
         if (ty == 0x90u && d2) { play(d1, d2); midi_src = (uint32_t)src; }
         else if (ty == 0x80u || ty == 0x90u) stop(d1);
         else if (ty == 0xE0u) fom_set_bend(((int32_t)((uint32_t)d2 << 7 | d1) - 8192) >> 5);   /* +-2 semitones */
-        else if (ty == 0xC0u && d1 < 2u * FOM_NENGINES)       /* program change: the route */
-            set_route(d1 % FOM_NENGINES, d1 / FOM_NENGINES);
+        else if (ty == 0xC0u && d1 < 6u) {                   /* program change: the route */
+            static const uint8_t ROUTE[6][2] = {{FOM_E_BRAIDS, 0}, {FOM_E_RINGS, 0}, {FOM_E_BRAIDS, 1},
+                                                {FOM_E_RINGS, 1}, {FOM_E_BRAIDS_RINGS, 0}, {FOM_E_BRAIDS_RINGS, 1}};
+            set_route(ROUTE[d1][0], ROUTE[d1][1]);
+        }
     }
 }
 static void app_idle(void)
@@ -730,7 +781,9 @@ static void app_main(void)
         if (b & (1u << BTN_REC) && set.clouds) { frozen = !frozen; fom_set_freeze((int)frozen); }
         if (engine_changed) { engine_changed = 0; dirty = 1; t_change = fm1_ms; }
         if ((e = fm1_enc_take(ENC_ALGORITHM)) != 0) {   /* Braids' shape, Rings' model */
-            knob_turn(set.engine == FOM_E_RINGS ? FOM_P_MODEL : FOM_P_SHAPE, e); dirty = 1; t_change = fm1_ms;
+            /* Rings' model on Rings' pages (and wherever Braids is not), else Braids' shape */
+            knob_turn(shown_module() == M_RINGS || set.engine == FOM_E_RINGS ? FOM_P_MODEL : FOM_P_SHAPE, e);
+            dirty = 1; t_change = fm1_ms;
         }
         for (k = 0; k < 4u; k++)
             if ((e = fm1_enc_take(ENC_KNOB1 + k)) != 0 && page_knob(set.page, k) != A_NONE) {

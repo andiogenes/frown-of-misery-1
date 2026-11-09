@@ -10,7 +10,8 @@
  * amplitude glide (attack / release) and a pitch glide.
  * Rings: the modal resonator, the sympathetic strings or the string (dsp/engine/fom_rings.cc), 1, 2 or 4 voices
  * taking the strikes in turn; a note-on strikes (fom_strike), there is no note-off: DAMPING decides how long it
- * rings.
+ * rings. Braids > Rings: Braids' voices into Rings' audio input instead of its own exciter; a note-on plays Braids
+ * and strikes Rings, which then only picks the voice and its note (Rings' V/OCT and STRUM with the input patched).
  * Clouds (dsp/engine/fom_clouds.cc): its granular mode, as an effect after either engine (fom_set_clouds).
  *
  * Threading: fom_render_add() runs in the audio ISR. Everything else is called from the main loop and only
@@ -32,6 +33,7 @@ extern "C" {
 enum {                         /* engines */
     FOM_E_BRAIDS,
     FOM_E_RINGS,
+    FOM_E_BRAIDS_RINGS,        /* Braids into Rings' audio input (its exciter): a note plays Braids and picks Rings' */
     FOM_NENGINES
 };
 
@@ -59,7 +61,8 @@ enum {                         /* parameters (all engines; each engine reads the
     FOM_P_C_FEEDBACK,
     FOM_P_C_REVERB,
     FOM_P_C_PITCH,             /* Clouds' PITCH, -24..24 semitones */
-    FOM_P_C_QUALITY,           /* Clouds' quality: 0 HI (16 bits, 32 kHz), 1 LO (Clouds' low fidelity: 8 bits, 16 kHz) */
+    FOM_P_C_QUALITY,
+    FOM_P_R_LEVEL,             /* Rings' output level, 0..32767 (Braids' LEVEL drives Rings in BRAIDS > RINGS) */           /* Clouds' quality: 0 HI (16 bits, 32 kHz), 1 LO (Clouds' low fidelity: 8 bits, 16 kHz) */
     FOM_NPARAM
 };
 #define FOM_ENV_MAX 20u

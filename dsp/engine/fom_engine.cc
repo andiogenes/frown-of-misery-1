@@ -45,6 +45,7 @@ const fom_param_info_t kParams[FOM_NPARAM] = {
     /* FOM_P_C_REVERB   */ {"REVERB", 0, 32767, 9830, FOM_K_BAR},
     /* FOM_P_C_PITCH    */ {"PITCH", -24, 24, 0, FOM_K_SEMI},
     /* FOM_P_C_QUALITY  */ {"QUALTY", 0, 1, 0, FOM_K_QUALITY},
+    /* FOM_P_R_LEVEL    */ {"LEVEL", 0, 32767, 32767, FOM_K_BAR},
 };
 
 /* Glide: a one-pole slew of the pitch, updated every kSub frames. kGlideK[i] = 65536 (1 - e^(-kSub / 2^i)),
@@ -138,7 +139,8 @@ void fom_set_ticks(uint32_t (*ticks)(void)) { g_ticks = ticks; }
 uint32_t fom_clouds_ticks(void) { return g_clouds_ticks; }
 int fom_clouds_lofi(void)
 {
-    return g_p[FOM_P_C_QUALITY] || (g_engine == FOM_E_RINGS && g_p[FOM_P_MODEL] == 1);
+    /* LO by itself where HI does not fit: after the sympathetic strings, and after Braids > Rings */
+    return g_p[FOM_P_C_QUALITY] || g_engine == FOM_E_BRAIDS_RINGS || (g_engine == FOM_E_RINGS && g_p[FOM_P_MODEL] == 1);
 }
 
 void fom_strike(uint32_t note, uint32_t velocity)
@@ -154,8 +156,10 @@ int fom_sounding(void)
 {
     uint32_t v;
     if (g_clouds_on && g_clouds_quiet < 44100u) return 1;      /* Clouds' grains and reverb still moving */
-    if (g_engine == FOM_E_RINGS)
-        return (g_p[FOM_P_MODEL] ? g_strings.sounding() : g_rings.sounding()) || g_strike_w != g_strike_r;
+    if (g_engine != FOM_E_BRAIDS &&
+        ((g_p[FOM_P_MODEL] ? g_strings.sounding() : g_rings.sounding()) || g_strike_w != g_strike_r))
+        return 1;
+    if (g_engine == FOM_E_RINGS) return 0;
     for (v = 0; v < FOM_NV; v++)
         if (g_v[v].gate || g_v[v].amp) return 1;
     return 0;
@@ -163,7 +167,7 @@ int fom_sounding(void)
 
 static uint32_t q16(int32_t v) { return ((uint32_t)v << 1) | ((uint32_t)v >> 14); }   /* 0..32767 -> 0..65535 */
 
-static void render_rings(int32_t* out, uint32_t n)
+static void render_rings(int32_t* out, uint32_t n, const int32_t* in)   /* in: Rings' audio input, Q24, or null */
 {
     static const int32_t kPoly[3] = {1, 2, 4};
     fom::RingsPatch patch = {q16(g_p[FOM_P_STRUCTURE]), q16(g_p[FOM_P_BRIGHTNESS]), q16(g_p[FOM_P_DAMPING]),
@@ -179,7 +183,7 @@ static void render_rings(int32_t* out, uint32_t n)
                 g_strings.Strike(g_strike_note[r & 7u], fine, g_strike_vel[r & 7u]);
                 g_strike_r = r + 1u;
             }
-            g_strings.Render(patch, g_p[FOM_P_LEVEL], out + 2u * s0, n - s0 < 32u ? n - s0 : 32u);
+            g_strings.Render(patch, g_p[FOM_P_R_LEVEL], out + 2u * s0, n - s0 < 32u ? n - s0 : 32u, in ? in + s0 : 0);
         }
         return;
     }
@@ -194,7 +198,7 @@ static void render_rings(int32_t* out, uint32_t n)
             g_rings.Strike(g_strike_note[r & 7u], fine, g_strike_vel[r & 7u]);
             g_strike_r = r + 1u;
         }
-        g_rings.Render(patch, g_p[FOM_P_LEVEL], out + 2u * s0, n - s0 < 32u ? n - s0 : 32u);
+        g_rings.Render(patch, g_p[FOM_P_R_LEVEL], out + 2u * s0, n - s0 < 32u ? n - s0 : 32u, in ? in + s0 : 0);
     }
 }
 
@@ -247,8 +251,10 @@ void fom_render_add(int32_t *out, uint32_t n)
     cp.freeze = g_freeze != 0;
     int lofi = fom_clouds_lofi();
     g_clouds.set_lofi(lofi != 0);
-    /* the most grains: Clouds' own after Braids (32, LO 46); after Rings 16 (LO 24), its sympathetic strings 8 (LO 12) */
-    int32_t cap = g_engine != FOM_E_RINGS ? (lofi ? 46 : 32) : g_p[FOM_P_MODEL] == 1 ? (lofi ? 12 : 8) : (lofi ? 24 : 16);
+    /* the most grains: Clouds' own after Braids (32, LO 46); after Rings 16 (LO 24); after the sympathetic strings and
+     * after Braids > Rings 8 */
+    int32_t cap = g_engine == FOM_E_BRAIDS ? (lofi ? 46 : 32)
+                : g_engine == FOM_E_BRAIDS_RINGS || g_p[FOM_P_MODEL] == 1 ? 8 : (lofi ? 24 : 16);
     if (g_load > 850u) { g_guard += 4; g_guard_calm = 0; }  /* over 85 %: four grains fewer at once */
     else if (g_guard && g_load < 700u && ++g_guard_calm >= 64u) { g_guard--; g_guard_calm = 0; }   /* back slowly */
     if (g_guard > cap - 4) g_guard = cap - 4;
@@ -265,14 +271,32 @@ void fom_render_add(int32_t *out, uint32_t n)
     g_clouds_ticks = g_ticks ? g_ticks() - t0 : 0;
 }
 
+static void render_braids(int32_t *out, uint32_t n);
+static int32_t g_rings_in[FOM_BLOCK_MAX];               /* Braids into Rings: its audio input, Q24 */
+static int32_t g_braids_out[2 * FOM_BLOCK_MAX];
+
 static void render_engine(int32_t *out, uint32_t n)
+{
+    uint32_t i;
+    if (g_engine == FOM_E_RINGS) { render_rings(out, n, 0); return; }
+    if (g_engine == FOM_E_BRAIDS) { render_braids(out, n); return; }
+    for (i = 0; i < 2u * n; i++) g_braids_out[i] = 0;          /* Braids > Rings: Braids, mono, into Rings' input */
+    render_braids(g_braids_out, n);
+    for (i = 0; i < n; i++) {
+        int32_t x = g_braids_out[2u * i];
+        x = x > 32767 ? 32767 : x < -32768 ? -32768 : x;       /* (Rings' codec takes no more) */
+        g_rings_in[i] = x << 9;
+    }
+    render_rings(out, n, g_rings_in);
+}
+
+static void render_braids(int32_t *out, uint32_t n)
 {
     uint32_t v, i, s0, shape = (uint32_t)g_p[FOM_P_SHAPE];
     int16_t timbre = (int16_t)g_p[FOM_P_TIMBRE], color = (int16_t)g_p[FOM_P_COLOR];
     int32_t bend = g_bend + g_p[FOM_P_FINE], level = g_p[FOM_P_LEVEL];
     int32_t up = 0x7FFF00 >> g_p[FOM_P_ATTACK], down = 0x7FFF00 >> g_p[FOM_P_RELEASE];   /* Q23 per frame */
     int32_t gk = kGlideK[g_p[FOM_P_GLIDE]];
-    if (g_engine == FOM_E_RINGS) { render_rings(out, n); return; }
     for (v = 0; v < FOM_NV; v++) {
         Voice &vc = g_v[v];
         fm1::BraidsVoice &osc = g_osc[v];

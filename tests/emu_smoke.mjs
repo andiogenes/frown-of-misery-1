@@ -57,7 +57,8 @@ if (frames < 2 * 44100) fail.push("too few audio frames (the firmware is not kee
 if (lit < 1000) fail.push("the screen is (nearly) blank");
 
 const CHORD = [48, 55, 60, 64];                         // four notes: every voice busy
-// [name, program change (the route: 0 Braids, 1 Rings, 2 Braids > Clouds, 3 Rings > Clouds), ALGORITHM clicks
+// [name, program change (the route: 0 Braids, 1 Rings, 2 Braids > Clouds, 3 Rings > Clouds, 4 Braids > Rings, 5 Braids >
+// Rings > Clouds), ALGORITHM clicks
 // (encoder 1: Rings' model, from where it is), Clouds' DENSITY to the top (its most grains: page GRAIN is two EDITs
 // past the engine's two pages, DENSITY is KNOB3)]
 // A route may carry its own CPU limit: the sympathetic strings into Clouds are the heaviest pair (~70 % here, ~90 % on
@@ -66,11 +67,14 @@ for (const [name, program, clicks, dense, limit] of [["Braids", 0, 0], ["Rings m
                                               ["Rings sympathetic strings", 1, 1], ["Rings string", 1, 1],
                                               ["Braids > Clouds", 2, 0, true], ["Rings modal > Clouds", 3, -2, true],
                                               ["Rings string > Clouds", 3, 2, true],
-                                              ["Rings sympathetic strings > Clouds", 3, -1, true, 75]]) {
+                                              ["Rings sympathetic strings > Clouds", 3, -1, true, 75],
+                                              ["Braids > Rings modal", 4, -1], ["Braids > Rings > Clouds", 5, 0, true]]) {
+  // (Braids > Rings: ALGORITHM turns Rings' model on Rings' pages, two EDITs in; Clouds' GRAIN is four)
+  const two = program >= 4;
   midi(0xC0, program);                                  // program change: the route
-  if (clicks) { run(0.1); x.fm1_enc(1, clicks); }
-  if (dense) { run(0.1); press(6); press(6); x.fm1_enc(4, 64); }
-  run(0.5);
+  if (clicks) { run(0.1); if (two) { press(6); press(6); } x.fm1_enc(1, clicks); }
+  if (dense) { run(0.1); for (let i = 0; i < (two ? (clicks ? 2 : 4) : 2); i++) press(6); x.fm1_enc(4, 64); }
+  run(two ? 6 : 0.5);                                   // (Rings fed by Braids rings on for seconds)
   const quiet = level(0.5);
   for (const n of CHORD) midi(0x90, n, 100);
   const note = level(0.6);

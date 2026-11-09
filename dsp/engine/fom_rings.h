@@ -36,7 +36,13 @@ class ModalVoice {
     bool idle() const { return idle_; }
     /* Adds n samples of the odd and the even modes (Q24) to odd[] and even[]. active: this voice takes the exciter
      * (the others' excitation filters close to 10 Hz, as in Rings). */
-    void Render(const RingsPatch& patch, bool active, int32_t* odd, int32_t* even, size_t n);
+    void Render(const RingsPatch& patch, bool active, int32_t* odd, int32_t* even, size_t n) {
+        Render(patch, active, false, 0, odd, even, n);
+    }
+    /* external: Rings' audio input is in use (internal_exciter off: no pulse, the input's excitation filter, q 0.8);
+     * in: this voice's input, Q24, or null (the voices not active get silence) */
+    void Render(const RingsPatch& patch, bool active, bool external, const int32_t* in, int32_t* odd, int32_t* even,
+                size_t n);
 
  private:
     int32_t ComputeFilters(const RingsPatch& patch);
@@ -68,13 +74,15 @@ class RingsModal {
     void Strike(uint32_t note, int32_t fine, uint32_t velocity);
     void set_fine(int32_t fine) { fine_ = fine; }
     bool sounding() const;
-    /* Adds n stereo frames: L the odd modes, R the even (Rings' OUT and AUX), Q15 times level Q15. */
-    void Render(const RingsPatch& patch, int32_t level, int32_t* out, size_t n);
+    /* Adds n stereo frames: L the odd modes, R the even (Rings' OUT and AUX), Q15 times level Q15. in: Rings' audio
+     * input (mono, Q24, n samples) or null; with one, a strike only picks the voice and its note (no pulse). */
+    void Render(const RingsPatch& patch, int32_t level, int32_t* out, size_t n, const int32_t* in = 0);
 
  private:
     ModalVoice voice_[kMaxPolyphony];
     uint8_t note_[kMaxPolyphony];
     int32_t polyphony_, active_, fine_;
+    bool external_;                /* the last Render had an input */
     int32_t peak_;                 /* the limiter's envelope, Q24 */
     int32_t odd_[32], even_[32];   /* one sub-block */
 };
@@ -170,8 +178,9 @@ class RingsStrings {
     /* A note-on, taken at the start of the next 24-sample block (as Rings takes a strum). */
     void Strike(uint32_t note, int32_t fine, uint32_t velocity);
     bool sounding() const { return silent_ < 44100u; }
-    /* Adds n stereo frames, Q15 times level Q15 (any n: the 24-sample grid is kept across calls). */
-    void Render(const RingsPatch& patch, int32_t level, int32_t* out, size_t n);
+    /* Adds n stereo frames, Q15 times level Q15 (any n: the 24-sample grid is kept across calls). in: Rings' audio
+     * input (mono, Q24) or null: with one there is no pluck, and every string takes the input (24 samples late). */
+    void Render(const RingsPatch& patch, int32_t level, int32_t* out, size_t n, const int32_t* in = 0);
 
  private:
     void Configure();
@@ -186,6 +195,11 @@ class RingsStrings {
     int64_t dc_y_[kMaxPolyphony];                                                /* its state Q40 */
     int32_t* lines_;
     int32_t* stretch_;
+    bool external_;
+    bool strum_late_;              /* with an input: the strike taken a block late, with it */
+    uint8_t late_note_, late_vel_;
+    int32_t ext_in_[kRingsBlock];  /* the input for the next block, Q24 */
+    int64_t ex_s1_[kMaxPolyphony], ex_s2_[kMaxPolyphony];   /* the input's excitation filters, Q24 */
     int32_t model_, polyphony_, active_, fine_;
     bool dirty_;
     int32_t note_[kMaxPolyphony];  /* MIDI, Q16: idle voices keep Rings' defaults (C0 + 0.05 a voice) */

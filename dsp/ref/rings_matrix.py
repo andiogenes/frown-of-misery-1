@@ -22,6 +22,10 @@ lsd48 / env48 are printed for information. The string with negative dispersion (
 "curved bridge" in its loop: a waveform match decays there by design, so its SNR is not asked and its colour and
 envelope may differ by up to 2 dB (with BRIGHTNESS high and long DAMPING the loop goes chaotic).
 
+With an external input (in=, Braids into Rings on the FM-1: no pulse or pluck, Rings' input excitation filter, every
+string driven by the input), the port against Rings at 44.1 kHz on a sawtooth melody: SNR at least 40 dB, the string
+models a block (24 samples) late, as the port takes its input a block ahead.
+
 Each case strikes five notes, C2 to C6, 0.6 s apart. The first 24 samples are left out: Rings glides its POSITION
 in from 0 over its first block after power-on, the port does not.
 
@@ -34,6 +38,7 @@ import numpy as np
 import compare
 
 SNR_MIN, LSD_MAX, ENV_MAX = 30.0, 1.0, 1.0
+SNR_MIN_INPUT = 40.0                    # an external input: see above
 SNR_MIN_STRINGS = 20.0                  # five notes ringing into each other: long tails, see above
 LSD_MAX_STRETCHED, ENV_MAX_STRETCHED = 3.5, 2.0   # STRUCTURE >= 0.9: see above
 SNR_BAND = 16000.0
@@ -61,6 +66,20 @@ def model_cases(model, quick):
         for s in (0.0, 1.0):
             for b in (0.0, 1.0):
                 yield dict(base, structure=s, brightness=b, damping=0.9)
+
+
+def write_input(path):
+    """a sawtooth melody at 44.1 kHz, notes held 0.8 s, the external exciter"""
+    import wave
+    r = 44100
+    t = np.arange(4 * r) / r
+    x = np.zeros_like(t)
+    for f, a, b in ((110, 0, 0.8), (146.8, 1, 1.8), (196, 2, 2.6), (130.8, 3, 3.5)):
+        m = (t >= a) & (t < b)
+        x[m] += 0.5 * (2 * ((t[m] * f) % 1) - 1)
+    with wave.open(path, "wb") as w:
+        w.setnchannels(1); w.setsampwidth(2); w.setframerate(r)
+        w.writeframes((x * 32767).astype(np.int16).tobytes())
 
 
 def lowpass(x, rate, cutoff, taps=255):
@@ -105,6 +124,20 @@ def main():
         name = " ".join(f"{k}={v}" for k, v in c.items())
         l44 = f"{same['lsd']:6.2f} {same['env']:6.2f}" if same else f"{'':6} {'':6}"
         print(f"{name:66} {a['snr']:6.1f} {l44} {s['lsd']:6.2f} {s['env']:6.2f}  {'ok' if ok else 'FAILED'}")
+    write_input("build/m_ext.wav")
+    for model in (0, 1, 2):
+        for b in (0.2, 0.5, 0.9):
+            args = [f"model={model}", f"brightness={b}", "notes=45,50,55,48", "every=1", "seconds=4", "in=build/m_ext.wav"]
+            subprocess.run(["build/ref_rings44", "build/m_ref.wav", *args], check=True, capture_output=True)
+            subprocess.run(["build/port_rings44", "build/m_port.wav", "refrate=44100", *args], check=True,
+                           capture_output=True)
+            x, xr = compare.read("build/m_ref.wav")
+            y, yr = compare.read("build/m_port.wav")
+            m = compare.measure(x, xr, y, yr, 3.0)
+            ok = m["snr"] >= SNR_MIN_INPUT and m["lag"] in ((0,) if model == 0 else (24,))
+            bad += not ok
+            name = f"input: model={model} brightness={b}"
+            print(f"{name:66} {m['snr']:6.1f} {'':6} {'':6} {'':6} {'':6}  {'ok' if ok else 'FAILED'} (lag {m['lag']})")
     print(f"{bad} case(s) outside snr44 >= {SNR_MIN}, lsd48 <= {LSD_MAX}, env48 <= {ENV_MAX} dB "
           f"({LSD_MAX_STRETCHED}, {ENV_MAX_STRETCHED} at structure >= 0.9)" if bad
           else "Rings (modal, sympathetic strings, string): the port matches the reference")
